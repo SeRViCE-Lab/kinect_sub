@@ -145,21 +145,14 @@ include_directories(
 # add_dependencies(kinect_sub ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 ## Declare a C++ executable
-add_executable(kinect_sub src/kinect_sub.cpp)
-add_executable(color_sub src/color_sub.cpp)
-add_executable(depth_sub src/depth_sub.cpp)
-add_executable(ir_sub src/ir_sub.cpp)
+add_executable(sub src/sub.cpp)
 
 ## Add cmake target dependencies of the executable
 ## same as for the library above
 # add_dependencies(kinect_sub_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 ## Specify libraries to link a library or executable target against
-target_link_libraries(kinect_sub   ${catkin_LIBRARIES}  ${OpenCV_LIBRARIES}  ${PCL_LIBRARIES}  ${kinect2_bridge_LIBRARIES} )
-target_link_libraries(color_sub   ${catkin_LIBRARIES}  ${OpenCV_LIBRARIES}  ${PCL_LIBRARIES}  ${kinect2_bridge_LIBRARIES} )
-target_link_libraries(depth_sub   ${catkin_LIBRARIES}  ${OpenCV_LIBRARIES}  ${PCL_LIBRARIES}  ${kinect2_bridge_LIBRARIES} )
-target_link_libraries(ir_sub   ${catkin_LIBRARIES}  ${OpenCV_LIBRARIES}  ${PCL_LIBRARIES}  ${kinect2_bridge_LIBRARIES} )
-
+target_link_libraries(sub   ${catkin_LIBRARIES}  ${OpenCV_LIBRARIES}  ${PCL_LIBRARIES}  ${kinect2_bridge_LIBRARIES} )
 #############
 ## Install ##
 #############
