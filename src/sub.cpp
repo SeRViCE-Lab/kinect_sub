@@ -1,22 +1,26 @@
 #include <ros/ros.h>
 #include <iostream>
 #include <cassert>
+#include <limits>
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
+
+#include <sensor_msgs/CameraInfo.h>
 #include <sensor_msgs/image_encodings.h>
 #include <image_transport/image_transport.h>
+#include <image_transport/subscriber_filter.h>
 
+#include <boost/bind.hpp>
+#include <boost/function.hpp>
 #include <boost/thread/thread.hpp>
+
 #include <pcl/common/common_headers.h>
 #include <pcl/features/normal_3d.h>
 #include <pcl/io/pcd_io.h>
 #include <pcl/visualization/pcl_visualizer.h>
 #include <pcl/console/parse.h>
-#include <cassert>
-// #include <limits>
 
-std::string imageEncoding;
 
 std::string nodeName;
 std::string topicName;
@@ -37,15 +41,19 @@ class Receiver
   ros::NodeHandle nc;
   image_transport::ImageTransport it;
   image_transport::Subscriber sub;
+  // image_transport::SubscriberFilter subColor;
+  ros::Subscriber subColor;
 
   public:
     Receiver(std::string topicName, std::string imageFormat)
       : running(false), it(nc), topicName_(topicName), imageFormat_(imageFormat), GoDepth(false),
-          GoColor(false), GoIr(false), screen_height(640), screen_width(480), viewport(0)
+          GoColor(false), GoIr(false), screen_height(640), screen_width(480), viewport(0), 
+          queueSize(5), basetopic("/kinect2")
     {         
       const std::string basetopic = "/kinect2";
       std::string subName    = basetopic + "/" + topicName_ + "/" + "image_" + imageFormat_  ;
       sub = it.subscribe(subName, 1, &Receiver::imageCallback, this);
+      this->subCams();
       ROS_INFO_STREAM("Subscribing to: " << subName);
       windowName = imageFormat_ + " viewer";
       cv::namedWindow(windowName);   
@@ -56,8 +64,70 @@ class Receiver
     ~Receiver()
     {      
       cv::destroyWindow(windowName);
-      // delete cloud_ptr;
-      // delete viewer;
+    }
+
+    void imageCallback(const sensor_msgs::ImageConstPtr& msg)
+    {
+      try
+      {
+        ROS_INFO("msg frame_id: %s", msg->header.frame_id.c_str());
+        ROS_INFO("msg step %u",  msg->step);
+        ROS_INFO("msg encoding %s", msg->encoding.c_str());
+
+        if(imageFormat == "color_rect") //color
+          {  
+            GoColor = true;
+            cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
+            color = cv_ptr->image;        
+            imageDisp();
+          }
+        else if(imageFormat == "depth_rect" || "depth") //depth
+          {    
+            GoDepth = true;     
+            cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::TYPE_16UC1);
+            depth = cv_ptr->image;
+            imageDisp();
+            cloudDisp(depth, color, msg, cloud_ptr);
+          }
+        else if(msg->header.frame_id.c_str() == "kinect2_ir_optical_frame") //ir)
+          { 
+            GoIr = true;       
+            cv_ptr= cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::TYPE_16UC1);
+            ir = cv_ptr->image;
+            imageDisp();
+            cloudDisp(ir, color, msg, cloud_ptr);
+          }
+        else
+          {
+            ROS_INFO("Incorrect image format supplied");
+          }
+      }
+
+      catch (cv_bridge::Exception& e)
+      {
+        ROS_ERROR("cv_bridge exception: %s", e.what());
+      }
+    }
+
+    void camInfoCallback(const sensor_msgs::CameraInfo::ConstPtr& colormsg)
+    {
+      cv::Mat color, depth;      
+      ROS_INFO_STREAM("colorInfo msg: " << colormsg);
+    }
+
+    void subCams()
+    {      
+      const std::string subCamInfoColor = basetopic + "/hd" + "/camera_info";
+      const std::string subCamInfoDepth = basetopic + "/sd" + "/camera_info";
+      const sensor_msgs::CameraInfo::ConstPtr colormsg;
+      const ros::TransportHints& hints = ros::TransportHints().maxDatagramSize(1000) ;
+      uint32_t second = 1;
+/*      boost::function<void(const sensor_msgs::CameraInfo::ConstPtr)> camInfoFunction;
+      //bind the methods
+      camInfoFunction = boost::bind(&Receiver::camInfoCallback, _1);*/     //void (*)(const ImageConstPtr&)
+      subColor = it.subscribe(subCamInfoColor, second, this->camInfoCallback(colormsg), hints);
+      ROS_INFO("I subscribed to color cam info");
+      // ros::Subscriber sub = nc.subscribe(subCamInfoColor, 1, &Receiver::camInfoCallback, &foo_object);
     }
 
     boost::shared_ptr<pcl::visualization::PCLVisualizer> createCloud (pcl::PointCloud<pcl::PointXYZRGBA>::ConstPtr cloud, sensor_msgs::ImageConstPtr msg)
@@ -77,7 +147,7 @@ class Receiver
       return (viewer);
     }
 
-    void cloudDisp(cv::Mat depth, cv::Mat color, sensor_msgs::ImageConstPtr msg, pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cloud_ptr)
+    void cloudDisp(cv::Mat depth, cv::Mat color, sensor_msgs::ImageConstPtr msg, pcl::PointCloud<pcl::PointXYZRGBA>::Ptr &cloud_ptr)
     {  
       const float badPoint = std::numeric_limits<float>::quiet_NaN();
 
@@ -92,7 +162,7 @@ class Receiver
 
         for(size_t c = 0; c < (size_t)depth.cols; ++c, ++itP, ++itD)
         {
-          register const float depthVal = *itD/1000.0f;
+          const float depthVal = *itD/1000.0f;
 
           //we check for invalid floats within depth map
           if(*itD == 0)
@@ -109,8 +179,8 @@ class Receiver
           itP->g = itC->val[1];
           itP->r = itC->val[2];
           itP->a = 255;
+          cloud_ptr.push_back(*itP);
         }        
-        // cloud_ptr->header_frame_id = msg->header.frame_id.c_str();
         cloud_ptr->height = depth.rows;
         cloud_ptr->width = depth.cols;
         cloud_ptr->is_dense = false;
@@ -167,54 +237,10 @@ class Receiver
       else{ ROS_INFO("No valid Mat supplied to display"); }
     }
 
-    void imageCallback(const sensor_msgs::ImageConstPtr& msg)
-    {
-      try
-      {
-        ROS_INFO("msg frame_id: %s", msg->header.frame_id.c_str());
-        ROS_INFO("msg step %u",  msg->step);
-        ROS_INFO("msg encoding %s", msg->encoding.c_str());
-
-        if(imageFormat == "color_rect") //color
-          {  
-            GoColor = true;
-            cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
-            color = cv_ptr->image;        
-            imageDisp();
-          }
-        else if(imageFormat == "depth_rect" || "depth") //depth
-          {    
-            GoDepth = true;     
-            cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::TYPE_16UC1);
-            depth = cv_ptr->image;
-            imageDisp();
-            cloudDisp(depth, color, msg, cloud_ptr);
-          }
-        else if(msg->header.frame_id.c_str() == "kinect2_ir_optical_frame") //ir)
-          { 
-            GoIr = true;       
-            cv_ptr= cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::TYPE_16UC1);
-            ir = cv_ptr->image;
-            imageDisp();
-            cloudDisp(ir, color, msg, cloud_ptr);
-          }
-        else
-          {
-            ROS_INFO("Incorrect image format supplied");
-          }
-      }
-
-      catch (cv_bridge::Exception& e)
-      {
-        ROS_ERROR("cv_bridge exception: %s", e.what());
-      }
-    }
-
   private:
-    bool running;
     std::string topicName_, imageFormat_;
     cv::Mat color, depth, ir;
-    bool GoDepth, GoColor, GoIr;
+    bool GoDepth, GoColor, GoIr; bool running;
     const int screen_height, screen_width, viewport;
     cv_bridge::CvImagePtr cv_ptr;
     pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cloud_ptr;
@@ -222,8 +248,10 @@ class Receiver
 
     cv::Mat cameraMatrixColor, cameraMatrixDepth;
     cv::Mat lookupX, lookupY;
+    sensor_msgs::ImageConstPtr msg; 
+    const size_t queueSize;    
+    const std::string basetopic;
     std::string windowName;
-    sensor_msgs::ImageConstPtr msg;
 };
 
 
