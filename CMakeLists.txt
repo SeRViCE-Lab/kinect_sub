@@ -28,6 +28,7 @@ find_package(catkin REQUIRED COMPONENTS
 
 ## System dependencies are found with CMake's conventions
  find_package(Boost REQUIRED COMPONENTS system)
+ find_package(PCL 1.2 REQUIRED)
 
 
 ## Uncomment this if the package has a setup.py. This macro ensures
@@ -132,7 +133,11 @@ catkin_package(
 include_directories(
   ${catkin_INCLUDE_DIRS}  
   ${Boost_INCLUDE_DIRS}
+  ${PCL_INCLUDE_DIRS}
 )
+
+link_directories(${PCL_LIBRARY_DIRS})
+add_definitions(${PCL_DEFINITIONS})
 
 ## Declare a C++ library
 # add_library(kinect_sub

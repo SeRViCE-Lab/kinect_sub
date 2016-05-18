@@ -7,15 +7,20 @@
 #include <sensor_msgs/image_encodings.h>
 #include <image_transport/image_transport.h>
 
+#include <boost/thread/thread.hpp>
+#include <pcl/common/common_headers.h>
+#include <pcl/features/normal_3d.h>
+#include <pcl/io/pcd_io.h>
+#include <pcl/visualization/pcl_visualizer.h>
+#include <pcl/console/parse.h>
+#include <cassert>
+// #include <limits>
+
 std::string imageEncoding;
-std::string windowName;
 
 std::string nodeName;
 std::string topicName;
 std::string imageFormat;
-
-cv::Mat temp;
-cv_bridge::CvImagePtr cv_ptr, depth_ptr, ir_ptr;
 
 void help()
 {
@@ -26,10 +31,6 @@ void help()
   std::cout <<"           imageFormat = {<ir_rect> | <depth_rect>  | <color_rect> } " << std::endl;
 }
 
-namespace nodes
-{
-  enum Mode { color = 0,  depth = 1,  ir = 2,   mono = 3 };
-}
 
 class Receiver
 {
@@ -39,20 +40,131 @@ class Receiver
 
   public:
     Receiver(std::string topicName, std::string imageFormat)
-      : running(false), it(nc), topicName_(topicName), imageFormat_(imageFormat)
+      : running(false), it(nc), topicName_(topicName), imageFormat_(imageFormat), GoDepth(false),
+          GoColor(false), GoIr(false), screen_height(640), screen_width(480), viewport(0)
     {         
       const std::string basetopic = "/kinect2";
       std::string subName    = basetopic + "/" + topicName_ + "/" + "image_" + imageFormat_  ;
       sub = it.subscribe(subName, 1, &Receiver::imageCallback, this);
       ROS_INFO_STREAM("Subscribing to: " << subName);
       windowName = imageFormat_ + " viewer";
-      cv::namedWindow(windowName);      
+      cv::namedWindow(windowName);   
+      viewer = this->createCloud(cloud_ptr, msg);   
       cv::startWindowThread();
     }
 
     ~Receiver()
     {      
       cv::destroyWindow(windowName);
+      // delete cloud_ptr;
+      // delete viewer;
+    }
+
+    boost::shared_ptr<pcl::visualization::PCLVisualizer> createCloud (pcl::PointCloud<pcl::PointXYZRGBA>::ConstPtr cloud, sensor_msgs::ImageConstPtr msg)
+    {
+      boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer (new pcl::visualization::PCLVisualizer ("Depth Viewer"));
+      const std::string cloudName = "depth cloud";
+
+      cloudDisp(depth, color, msg, cloud_ptr);
+
+      viewer->initCameraParameters ();
+      viewer->setBackgroundColor (0.2, 0.3, 0.3);
+      viewer->setSize(screen_height, screen_width);
+      viewer->setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, cloudName, viewport);
+      viewer->addCoordinateSystem (0.5);    //don't want no cylinder
+      viewer->addPointCloud<pcl::PointXYZRGBA> (cloud, cloudName);
+      viewer->setSize(640, 480);
+      return (viewer);
+    }
+
+    void cloudDisp(cv::Mat depth, cv::Mat color, sensor_msgs::ImageConstPtr msg, pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cloud_ptr)
+    {  
+      const float badPoint = std::numeric_limits<float>::quiet_NaN();
+
+      #pragma omp parallel for 
+      for (int i = 0; i < depth.rows; ++i)
+      {
+        pcl::PointXYZRGBA *itP = &cloud_ptr->points[i * depth.cols];
+        const uint16_t *itD = depth.ptr<uint16_t>(i);        
+        const cv::Vec3b *itC = color.ptr<cv::Vec3b>(i);
+        const float y = lookupY.at<float>(0, i);
+        const float *itX = lookupX.ptr<float>();
+
+        for(size_t c = 0; c < (size_t)depth.cols; ++c, ++itP, ++itD)
+        {
+          register const float depthVal = *itD/1000.0f;
+
+          //we check for invalid floats within depth map
+          if(*itD == 0)
+          {
+            //inValids
+            itP->x = itP->y = itP->z = badPoint;
+            itP->rgba = 0;
+            continue;
+          }
+          itP->z = depthVal;
+          itP->x = *itX * depthVal;
+          itP->y = y * depthVal;          
+          itP->b = itC->val[0];
+          itP->g = itC->val[1];
+          itP->r = itC->val[2];
+          itP->a = 255;
+        }        
+        // cloud_ptr->header_frame_id = msg->header.frame_id.c_str();
+        cloud_ptr->height = depth.rows;
+        cloud_ptr->width = depth.cols;
+        cloud_ptr->is_dense = false;
+      }
+
+      if (GoDepth)
+      {
+        viewer = createCloud(cloud_ptr, msg);        
+        //process point_clouds
+        ROS_INFO_STREAM("Rows: " << cloud_ptr->height << " Heght: " << cloud_ptr->width);
+      }
+    }
+
+/*  void createLookup(size_t width, size_t height)
+  {
+    const float fx = 1.0f / cameraMatrixColor.at<double>(0, 0);
+    const float fy = 1.0f / cameraMatrixColor.at<double>(1, 1);
+    const float cx = cameraMatrixColor.at<double>(0, 2);
+    const float cy = cameraMatrixColor.at<double>(1, 2);
+    float *it;
+
+    lookupY = cv::Mat(1, height, CV_32F);
+    it = lookupY.ptr<float>();
+    for(size_t r = 0; r < height; ++r, ++it)
+    {
+       *it = (r - cy) * fy;
+    }
+        
+    lookupX = cv::Mat(1, width, CV_32F);
+    it = lookupX.ptr<float>();
+    for(size_t c = 0; c < width; ++c, ++it)
+    {
+      *it = (c - cx) * fx;
+    }
+  }*/
+
+    void imageDisp()
+    {
+      if(GoColor) 
+      { 
+        cv::imshow(windowName, color);
+        cv::waitKey(3);
+      }
+      else if(GoDepth)
+      {          
+        cv::imshow(windowName, depth);        
+        cv::waitKey(3);
+      }
+      else if(GoIr)
+      {          
+        cv::imshow(windowName, color);
+        cv::waitKey(3);
+      }
+      else{ ROS_INFO("No valid Mat supplied to display"); }
     }
 
     void imageCallback(const sensor_msgs::ImageConstPtr& msg)
@@ -65,24 +177,33 @@ class Receiver
 
         if(imageFormat == "color_rect") //color
           {  
+            GoColor = true;
             cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
-            cv::circle(cv_ptr->image, cv::Point(30, 30), 10, CV_RGB(255,0,0));  //draw a circle on the circle image
+            color = cv_ptr->image;        
+            imageDisp();
           }
-        else if(msg->encoding.c_str() == "16UC1") //ir or depth
-          {  
-            if(msg->header.frame_id.c_str() == "kinect2_rgb_optical_frame") //depth
-            {          
-              cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::TYPE_16UC1);
-            }
-            else if(msg->header.frame_id.c_str() == "kinect2_ir_optical_frame") //ir)
-            {          
-              cv_ptr= cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::TYPE_16UC1);
-            }
+        else if(imageFormat == "depth_rect" || "depth") //depth
+          {    
+            GoDepth = true;     
+            cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::TYPE_16UC1);
+            depth = cv_ptr->image;
+            imageDisp();
+            cloudDisp(depth, color, msg, cloud_ptr);
           }
-
-        cv::imshow(windowName, cv_bridge::toCvShare(msg, msg->encoding.c_str())->image);
-        cv::waitKey(3);
+        else if(msg->header.frame_id.c_str() == "kinect2_ir_optical_frame") //ir)
+          { 
+            GoIr = true;       
+            cv_ptr= cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::TYPE_16UC1);
+            ir = cv_ptr->image;
+            imageDisp();
+            cloudDisp(ir, color, msg, cloud_ptr);
+          }
+        else
+          {
+            ROS_INFO("Incorrect image format supplied");
+          }
       }
+
       catch (cv_bridge::Exception& e)
       {
         ROS_ERROR("cv_bridge exception: %s", e.what());
@@ -92,8 +213,24 @@ class Receiver
   private:
     bool running;
     std::string topicName_, imageFormat_;
+    cv::Mat color, depth, ir;
+    bool GoDepth, GoColor, GoIr;
+    const int screen_height, screen_width, viewport;
+    cv_bridge::CvImagePtr cv_ptr;
+    pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cloud_ptr;
+    boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer;
+
+    cv::Mat cameraMatrixColor, cameraMatrixDepth;
+    cv::Mat lookupX, lookupY;
+    std::string windowName;
+    sensor_msgs::ImageConstPtr msg;
 };
 
+
+namespace nodes
+{
+  enum Mode { color = 0,  depth = 1,  ir = 2,   mono = 3 };
+}
 
 int main(int argc, char **argv)
 {  
@@ -130,12 +267,22 @@ int main(int argc, char **argv)
   {      
       topicName = argv[1];
       imageFormat = argv[2]; 
+
   }
+
+  if(imageFormat == "ir_rect" || imageFormat == "ir" && topicName != "sd")
+    {
+      ROS_INFO("for ir Images, topic name must be \"sd\"");
+      abort();
+    }
 
   assert(imageFormat == "ir" || imageFormat == "ir_rect" || imageFormat == "color" || imageFormat == "color_rect" || imageFormat == "depth" || \
                          imageFormat == "depth_rect" || imageFormat == "mono" ||imageFormat ==   "mono_rect");
-  Receiver receiver(topicName, imageFormat);
 
+  Receiver receiver(topicName, imageFormat);  
+  // pcl::PointCloud<pcl::PointXYZ>::ConstPtr depth_cloud_ptr;
+  // boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer;
+  // viewer = receiver.createCloud();
   ros::spin();
   return 0;
 }
