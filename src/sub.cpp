@@ -5,11 +5,16 @@
 #include <ros/ros.h>
 #include <iostream>
 #include <cassert>
+#include <mutex>
 
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
 
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
+#include <pcl/io/pcd_io.h>
+#include <pcl/visualization/cloud_viewer.h>
 
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/CameraInfo.h>
@@ -43,7 +48,7 @@ class Receiver
 {
   public:
     Receiver(std::string topicName, std::string imageFormat)
-      : running(false), GoColor(false), GoDepth(false), GoIr(false), topicName_(topicName), 
+      : running(false), updateCloud(false), GoColor(false), GoDepth(false), GoIr(false), topicName_(topicName), 
       imageFormat_(imageFormat), windowName(imageFormat_ + " viewer"), basetopic("/kinect2"), 
       subName(basetopic + "/" + topicName_ + "/" + "image_" + imageFormat_ ), topicCamInfoColor(basetopic + "/hd" + "/camera_info"), 
       subImage(nc, subName, 1), subCam(nc, topicCamInfoColor, 1),
@@ -93,6 +98,16 @@ class Receiver
           cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::TYPE_16UC1);
           depth = cv_ptr->image;
           imageDisp();
+
+          cloud = pcl::PointCloud<pcl::PointXYZ>::Ptr(new pcl::PointCloud<pcl::PointXYZ>);
+          cloud->height = depth.rows;
+          cloud->width = depth.cols;
+          cloud->is_dense = false;
+          cloud->points.resize(cloud->height * cloud->width);          
+          createLookup(this->depth.cols, this->depth.rows);
+
+          cloudViewer();
+          updateCloud = true;
         }
       else if(msg->header.frame_id.c_str() == "kinect2_ir_optical_frame") //ir)
         { 
@@ -127,8 +142,120 @@ class Receiver
       else{ ROS_INFO("No valid Mat supplied to display"); }
     }
 
+    void cloudViewer()
+    {
+      cv::Mat depth;
+      pcl::visualization::PCLVisualizer::Ptr visualizer(new pcl::visualization::PCLVisualizer("Cloud Viewer"));
+      const std::string cloudName = "depth cloud";
+
+      lock.lock();
+      // color = this->color;
+      depth = this->depth;
+      lock.unlock();
+
+      createCloud(depth, cloud);
+
+      visualizer->addPointCloud(cloud, cloudName);
+      visualizer->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, cloudName);
+      visualizer->initCameraParameters();
+      visualizer->setBackgroundColor(0, 0, 0);
+      visualizer->setPosition(0, 0);
+      visualizer->setSize(depth.cols, depth.rows);
+      visualizer->setShowFPS(true);
+      visualizer->setCameraPosition(0, 0, 0, 0, -1, 0);
+      visualizer->registerKeyboardCallback(&Receiver::keyboardEvent, *this);
+
+      for(; running && ros::ok();)
+      {
+        if(updateCloud)
+        {
+          lock.lock();
+          // color = this->color;
+          depth = this->depth;
+          lock.unlock();
+
+          createCloud(depth, cloud);
+
+          visualizer->updatePointCloud(cloud, cloudName);
+        }
+        visualizer->spinOnce(10);
+      }
+      visualizer->close();
+    }
+
+    void keyboardEvent(const pcl::visualization::KeyboardEvent &event, void *)
+    {
+      if(event.keyUp())
+      {
+        switch(event.getKeyCode())
+        {
+        case 27:
+        case 'q':
+          running = false;
+          break;
+        case ' ':
+        // case 's':
+        //   save = true;
+         break;
+        }
+      }
+    }
+
+    void createCloud(const cv::Mat &depth, pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud) const
+    {
+      const float badPoint = std::numeric_limits<float>::quiet_NaN();
+
+      // #pragma omp parallel for
+      for(int r = 0; r < depth.rows; ++r)
+      {
+        pcl::PointXYZ *itP = &cloud->points[r * depth.cols];
+        const uint16_t *itD = depth.ptr<uint16_t>(r);
+        // const cv::Vec3b *itC = color.ptr<cv::Vec3b>(r);
+        const float y = lookupY.at<float>(0, r);
+        const float *itX = lookupX.ptr<float>();
+
+        for(size_t c = 0; c < (size_t)depth.cols; ++c, ++itP, ++itD, ++itX)
+        {
+          register const float depthValue = *itD / 1000.0f;
+          // Check for invalid measurements
+          if(*itD == 0)
+          {
+            // not valid
+            itP->x = itP->y = itP->z = badPoint;
+            continue;
+          }
+          itP->z = depthValue;
+          itP->x = *itX * depthValue;
+          itP->y = y * depthValue;
+        }
+      }
+    }
+
+    void createLookup(size_t width, size_t height)
+    {
+      const float fx = 1.0f / cameraMatrixColor.at<double>(0, 0);
+      const float fy = 1.0f / cameraMatrixColor.at<double>(1, 1);
+      const float cx = cameraMatrixColor.at<double>(0, 2);
+      const float cy = cameraMatrixColor.at<double>(1, 2);
+      float *it;
+
+      lookupY = cv::Mat(1, height, CV_32F);
+      it = lookupY.ptr<float>();
+      for(size_t r = 0; r < height; ++r, ++it)
+      {
+        *it = (r - cy) * fy;
+      }
+
+      lookupX = cv::Mat(1, width, CV_32F);
+      it = lookupX.ptr<float>();
+      for(size_t c = 0; c < width; ++c, ++it)
+      {
+        *it = (c - cx) * fx;
+      }
+    }
+
   private:
-    bool running, GoColor, GoDepth, GoIr;
+    bool running, updateCloud, GoColor, GoDepth, GoIr;
     ros::NodeHandle nc;
     // image_transport::ImageTransport it;
     std::string topicName_, imageFormat_, windowName;
@@ -146,7 +273,10 @@ class Receiver
     message_filters::Synchronizer<syncPolicy> sync;
 
     cv::Mat color, depth, ir, cameraMatrixColor;
-    float *colorMatrix;
+    cv::Mat lookupX, lookupY;
+
+    pcl::PointCloud<pcl::PointXYZ>::Ptr cloud;
+    std::mutex lock;
 };
 
 
@@ -165,7 +295,7 @@ int main(int argc, char **argv)
     case nodes::mono :
       nodeName = "monoGrabber"; break;
     default :
-      ROS_INFO("Ouch! This ain't yo' lane. Take the next exit. Wrong nodename supplied' ");
+      ROS_INFO(" Default ");
   }
   ros::init(argc, argv, nodeName, ros::init_options::AnonymousName);
 
