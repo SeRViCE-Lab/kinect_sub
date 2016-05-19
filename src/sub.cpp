@@ -20,8 +20,6 @@
 #include <message_filters/synchronizer.h>
 #include <message_filters/sync_policies/approximate_time.h>
 
-std::string windowName;
-
 std::string nodeName;
 std::string topicName;
 std::string imageFormat;
@@ -55,6 +53,8 @@ class Receiver
         cv::namedWindow(windowName);      
         cv::startWindowThread();
         running = true;
+        //initialize the K matrices or segfault
+        cameraMatrixColor = cv::Mat::zeros(3, 3, CV_64F);
       }
 
     ~Receiver()
@@ -63,51 +63,54 @@ class Receiver
       cv::destroyWindow(windowName);
     }
     
-    void callback(const sensor_msgs::ImageConstPtr& msg, const sensor_msgs::CameraInfoConstPtr& colorInfo)
+    void readCameraInfo(const sensor_msgs::CameraInfo::ConstPtr cameraInfo, cv::Mat &cameraMatrix) const
     {
-      try
+      double *itC = cameraMatrix.ptr<double>(0, 0);
+      for(size_t i = 0; i < 9; ++i, ++itC)
       {
-        ROS_INFO("msg frame_id: %s", msg->header.frame_id.c_str());
-        // ROS_INFO("msg step %u",  msg->step);
-        ROS_INFO("msg encoding %s", msg->encoding.c_str());
-        ROS_INFO_STREAM("color projection matrix \n" << *colorInfo);
+        *itC = cameraInfo->K[i];
+      }
+    }
 
-        if(imageFormat == "color_rect") //color
-          {  
-            GoColor = true;
-            cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
-            color = cv_ptr->image;        
-            imageDisp();
-          }
-        else if(imageFormat == "depth_rect" || "depth") //depth
-          {  
-            GoDepth = true;     
-            cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::TYPE_16UC1);
-            depth = cv_ptr->image;
-            imageDisp();
-          }
-        else if(msg->header.frame_id.c_str() == "kinect2_ir_optical_frame") //ir)
-          { 
-            GoIr = true;       
-            cv_ptr= cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::TYPE_16UC1);
-            ir = cv_ptr->image;
-            imageDisp();
-          }
-        else
-          {
-            ROS_INFO("Incorrect image format supplied");
-          }
-      }
-      catch (cv_bridge::Exception& e)
-      {
-        ROS_ERROR("cv_bridge exception: %s", e.what());
-      }
+    void callback(const sensor_msgs::ImageConstPtr& msg, const sensor_msgs::CameraInfoConstPtr colorInfo)
+    {
+      ROS_INFO("msg frame_id: %s", msg->header.frame_id.c_str());
+      // ROS_INFO("msg step %u",  msg->step);
+      ROS_INFO("msg encoding %s", msg->encoding.c_str());
+      readCameraInfo(colorInfo, cameraMatrixColor);
+      ROS_INFO_STREAM("Camera Matrix Color : \n" << cameraMatrixColor);      
+
+      if(imageFormat == "color_rect") //color
+        {  
+          GoColor = true;
+          cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
+          color = cv_ptr->image;        
+          imageDisp();
+        }
+      else if(imageFormat == "depth_rect" || "depth") //depth
+        {  
+          GoDepth = true;     
+          cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::TYPE_16UC1);
+          depth = cv_ptr->image;
+          imageDisp();
+        }
+      else if(msg->header.frame_id.c_str() == "kinect2_ir_optical_frame") //ir)
+        { 
+          GoIr = true;       
+          cv_ptr= cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::TYPE_16UC1);
+          ir = cv_ptr->image;
+          imageDisp();
+        }
+      else
+        {
+          ROS_INFO("Incorrect image format supplied");
+        }
     }
 
     void imageDisp()
     {
       if(GoColor) 
-      { 
+      {         
         cv::imshow(windowName, color);
         cv::waitKey(3);
       }
@@ -142,7 +145,8 @@ class Receiver
     camInfoSub subCam;
     message_filters::Synchronizer<syncPolicy> sync;
 
-    cv::Mat color, depth, ir;
+    cv::Mat color, depth, ir, cameraMatrixColor;
+    float *colorMatrix;
 };
 
 
