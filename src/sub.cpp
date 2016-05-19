@@ -198,7 +198,7 @@ class Receiver
       witch->registerKeyboardCallback(&Receiver::keyboardEvent, *this);
       pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> depth_color_handler(cloud, 255, 0, 255);
       witch->addPointCloud(cloud, depth_color_handler, cloudName);
-      witch->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, cloudName);
+      witch->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, cloudName);      
 
       for(; running && ros::ok();)
       {
@@ -207,17 +207,18 @@ class Receiver
           lock.lock();
           color = this->color;
           depth = this->depth;          
-          updateCloud = false;
+          // updateCloud = false;
           lock.unlock();
-          
-          updateCloud = true;
 
-          createCloud(depth, cloud);
+          ROS_INFO("updateCloud %d, ", updateCloud);
 
-          witch->removePointCloud(cloudName);
+          // witch->removePointCloud(cloudName);          
+          // createCloud(depth, cloud);
           witch->updatePointCloud(cloud, cloudName);
-        }
+        }        
+        updateCloud = true;
         witch->spinOnce(10);
+        boost::this_thread::sleep(boost::posix_time::microseconds(10));
       }
       witch->close();
     }
@@ -338,8 +339,8 @@ int main(int argc, char **argv)
       abort();
     }
 
-  assert(imageFormat == "ir" || imageFormat == "ir_rect" || imageFormat == "color" || imageFormat == "color_rect" || imageFormat == "depth" || \
-                         imageFormat == "depth_rect" || imageFormat == "mono" ||imageFormat ==   "mono_rect");
+  assert(imageFormat == "ir" or "ir_rect" or "color" or "color_rect" or "depth" or "depth_rect" or "depth_rect/compressed" or "depth/compressed" or  "mono" or  "mono_rect"\
+          and "\nimage format should be of one of the above" );
 
   Receiver receiver(topicName, imageFormat);
 
