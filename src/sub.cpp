@@ -71,12 +71,15 @@ class Receiver
     pcl::PointCloud<pcl::PointXYZ>::Ptr cloud;
     std::mutex lock;
 
+    boost::shared_ptr<pcl::visualization::PCLVisualizer> witch;
+    const std::string cloudName;
+
   public:
-    Receiver(std::string topicName, std::string imageFormat)
-      : running(false), updateCloud(false), GoColor(false), GoDepth(false), GoIr(false), topicName(topicName), 
+    Receiver(std::string topicName, std::string imageFormat, bool running)
+      : running(running), updateCloud(false), GoColor(false), GoDepth(false), GoIr(false), topicName(topicName), 
       imageFormat(imageFormat), windowName(imageFormat + " viewer"), basetopic("/kinect2"), 
       subName(basetopic + "/" + topicName + "/" + "image_" + imageFormat ), topicCamInfoColor(basetopic + "/hd" + "/camera_info"), 
-      subImage(nc, subName, 1), subCam(nc, topicCamInfoColor, 1),
+      subImage(nc, subName, 1), subCam(nc, topicCamInfoColor, 1), cloudName("depth cloud"),
       sync(syncPolicy(10), subImage, subCam)
       {
         sync.registerCallback(boost::bind(&Receiver::callback, this, _1, _2) );
@@ -85,12 +88,12 @@ class Receiver
         //initialize the K matrices or segfault
         cameraMatrixColor = cv::Mat::zeros(3, 3, CV_64F);
 
-/*        lock.lock();
+        lock.lock();
         this->color = color;
         this->depth = depth;
         // updateImage = true;
         updateCloud = true;
-        lock.unlock();*/
+        lock.unlock();
       }
 
     ~Receiver()
@@ -110,10 +113,10 @@ class Receiver
     void callback(const sensor_msgs::ImageConstPtr& msg, const sensor_msgs::CameraInfoConstPtr colorInfo)
     {
       ROS_INFO("msg frame_id: %s", msg->header.frame_id.c_str());
-      // ROS_INFO("msg step %u",  msg->step);
-      // ROS_INFO("msg encoding %s", msg->encoding.c_str());
+      ROS_INFO_STREAM("Camera Matrix Color : \n" << cameraMatrixColor);  
       readCameraInfo(colorInfo, cameraMatrixColor);
-      ROS_INFO_STREAM("Camera Matrix Color : \n" << cameraMatrixColor);        
+      // this->witch = createWitch();
+
       running = true;    
 
       if(imageFormat == "color_rect") //color
@@ -123,7 +126,7 @@ class Receiver
           color = cv_ptr->image;        
           imageDisp();
         }
-      else if(imageFormat == "depth_rect" || "depth") //depth
+      else if(imageFormat == "depth_rect" or "depth" or "depth_rect/compressed") //depth
         {  
           GoDepth = true;     
           cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::TYPE_16UC1);
@@ -142,6 +145,21 @@ class Receiver
         {
           ROS_INFO("Incorrect image format supplied");
         }
+    }
+
+    boost::shared_ptr<pcl::visualization::PCLVisualizer> createWitch()
+    {      
+      boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer (new pcl::visualization::PCLVisualizer("Cloud Viewer"));
+
+      viewer->setShowFPS(true);
+      viewer->setPosition(0, 0);
+      viewer->initCameraParameters();
+      viewer->setSize(depth.cols, depth.rows);
+      viewer->setBackgroundColor(0.2, 0.3, 0.3);
+      viewer->setCameraPosition(0, 0, 0, 0, -1, 0);
+      viewer->registerKeyboardCallback(&Receiver::keyboardEvent, *this);
+
+      return viewer;
     }
 
     void imageDisp()
@@ -166,7 +184,7 @@ class Receiver
 
     void cloudDisp()
     {      
-      cloud = pcl::PointCloud<pcl::PointXYZ>::Ptr(new pcl::PointCloud<pcl::PointXYZ>);
+      cloud = pcl::PointCloud<pcl::PointXYZ>::Ptr(new pcl::PointCloud<pcl::PointXYZ>());
       cloud->height = depth.rows;
       cloud->width = depth.cols;
       cloud->is_dense = false;
@@ -177,40 +195,34 @@ class Receiver
 
     void cloudViewer()
     {
-      cv::Mat depth;
-      pcl::visualization::PCLVisualizer::Ptr witch(new pcl::visualization::PCLVisualizer("Cloud Viewer"));
-      const std::string cloudName = "depth cloud";
+      cv::Mat color, depth;
+      boost::shared_ptr<pcl::visualization::PCLVisualizer> witch = createWitch();
 
       lock.lock();
       color = this->color;
       depth = this->depth;
+      // witch = this->witch;
       updateCloud = false;
       lock.unlock();
 
       createCloud(depth, cloud);
 
-      witch->setShowFPS(true);
-      witch->setPosition(0, 0);
-      witch->initCameraParameters();
-      witch->setSize(depth.cols, depth.rows);
-      witch->setBackgroundColor(0.2, 0.3, 0.3);
-      witch->setCameraPosition(0, 0, 0, 0, -1, 0);
-      witch->registerKeyboardCallback(&Receiver::keyboardEvent, *this);
       pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> depth_color_handler(cloud, 255, 0, 255);
       witch->addPointCloud(cloud, depth_color_handler, cloudName);
       witch->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, cloudName);      
 
-      for(; running && ros::ok();)
-      {
+      // for(; running ;)
+      // {
         if(updateCloud)
         {
           lock.lock();
           color = this->color;
-          depth = this->depth;          
-          // updateCloud = false;
+          depth = this->depth;  
+          // witch = this->witch;        
+          updateCloud = false;
           lock.unlock();
 
-          ROS_INFO("updateCloud %d, ", updateCloud);
+          //ROS_INFO("updateCloud %d, ", updateCloud);
 
           // witch->removePointCloud(cloudName);          
           // createCloud(depth, cloud);
@@ -219,7 +231,7 @@ class Receiver
         updateCloud = true;
         witch->spinOnce(10);
         boost::this_thread::sleep(boost::posix_time::microseconds(10));
-      }
+      // }
       witch->close();
     }
 
@@ -342,11 +354,15 @@ int main(int argc, char **argv)
   assert(imageFormat == "ir" or "ir_rect" or "color" or "color_rect" or "depth" or "depth_rect" or "depth_rect/compressed" or "depth/compressed" or  "mono" or  "mono_rect"\
           and "\nimage format should be of one of the above" );
 
-  Receiver receiver(topicName, imageFormat);
+  bool running;
 
-  while(ros::ok())
-  {
-    ros::spin();    
-  }
+  if(ros::ok())  { running = true; }
+  else {return 0;}
+
+  Receiver receiver(topicName, imageFormat, running);
+
+
+  ros::spin();   
+
   return 0;
 }
