@@ -70,16 +70,15 @@ class Receiver
 
     pcl::PointCloud<pcl::PointXYZ>::Ptr cloud;
     std::mutex lock;
-
+    const std::string cloudName; 
     boost::shared_ptr<pcl::visualization::PCLVisualizer> witch;
-    const std::string cloudName;
 
   public:
-    Receiver(std::string topicName, std::string imageFormat, bool running)
+    Receiver(std::string topicName, std::string imageFormat, bool running, boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer)
       : running(running), updateCloud(false), GoColor(false), GoDepth(false), GoIr(false), topicName(topicName), 
       imageFormat(imageFormat), windowName(imageFormat + " viewer"), basetopic("/kinect2"), 
       subName(basetopic + "/" + topicName + "/" + "image_" + imageFormat ), topicCamInfoColor(basetopic + "/hd" + "/camera_info"), 
-      subImage(nc, subName, 1), subCam(nc, topicCamInfoColor, 1), cloudName("depth cloud"),
+      subImage(nc, subName, 1), subCam(nc, topicCamInfoColor, 1), cloudName("depth cloud"), witch(viewer),
       sync(syncPolicy(10), subImage, subCam)
       {
         sync.registerCallback(boost::bind(&Receiver::callback, this, _1, _2) );
@@ -115,7 +114,6 @@ class Receiver
       ROS_INFO("msg frame_id: %s", msg->header.frame_id.c_str());
       ROS_INFO_STREAM("Camera Matrix Color : \n" << cameraMatrixColor);  
       readCameraInfo(colorInfo, cameraMatrixColor);
-      // this->witch = createWitch();
 
       running = true;    
 
@@ -145,21 +143,6 @@ class Receiver
         {
           ROS_INFO("Incorrect image format supplied");
         }
-    }
-
-    boost::shared_ptr<pcl::visualization::PCLVisualizer> createWitch()
-    {      
-      boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer (new pcl::visualization::PCLVisualizer("Cloud Viewer"));
-
-      viewer->setShowFPS(true);
-      viewer->setPosition(0, 0);
-      viewer->initCameraParameters();
-      viewer->setSize(depth.cols, depth.rows);
-      viewer->setBackgroundColor(0.2, 0.3, 0.3);
-      viewer->setCameraPosition(0, 0, 0, 0, -1, 0);
-      viewer->registerKeyboardCallback(&Receiver::keyboardEvent, *this);
-
-      return viewer;
     }
 
     void imageDisp()
@@ -196,46 +179,48 @@ class Receiver
     void cloudViewer()
     {
       cv::Mat color, depth;
-      boost::shared_ptr<pcl::visualization::PCLVisualizer> witch = createWitch();
 
       lock.lock();
       color = this->color;
       depth = this->depth;
-      // witch = this->witch;
+      witch = this->witch;
       updateCloud = false;
       lock.unlock();
 
       createCloud(depth, cloud);
 
+      int v1(0);
       pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> depth_color_handler(cloud, 255, 0, 255);
-      witch->addPointCloud(cloud, depth_color_handler, cloudName);
-      witch->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, cloudName);      
+      witch->setSize(depth.cols, depth.rows);
+      witch->addPointCloud<pcl::PointXYZ>(cloud, depth_color_handler, cloudName, v1);
+      witch->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 0.5, cloudName, v1);  
+      witch->registerKeyboardCallback(&Receiver::keyboardEvent, *this);    
 
       // for(; running ;)
       // {
-        if(updateCloud)
+        if(updateCloud && !witch->wasStopped())
         {
           lock.lock();
           color = this->color;
           depth = this->depth;  
-          // witch = this->witch;        
+          witch = this->witch;        
           updateCloud = false;
           lock.unlock();
 
           //ROS_INFO("updateCloud %d, ", updateCloud);
 
-          // witch->removePointCloud(cloudName);          
-          // createCloud(depth, cloud);
+          witch->removePointCloud(cloudName);          
+          createCloud(depth, cloud);
           witch->updatePointCloud(cloud, cloudName);
         }        
         updateCloud = true;
-        witch->spinOnce(10);
+        witch->spinOnce(10, true);
         boost::this_thread::sleep(boost::posix_time::microseconds(10));
       // }
-      witch->close();
+      // if(){witch->close();}      
     }
 
-    void keyboardEvent(const pcl::visualization::KeyboardEvent &event, void *)
+    void keyboardEvent(const pcl::visualization::KeyboardEvent &event, void * viewer_void)
     {
       if(event.keyUp())
       {
@@ -307,6 +292,21 @@ class Receiver
     }
 };
 
+boost::shared_ptr<pcl::visualization::PCLVisualizer> createWitch()
+{      
+  boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer (new pcl::visualization::PCLVisualizer("Cloud Viewer"));
+
+  void* viewer_void = NULL;
+
+  viewer->setShowFPS(true);
+  viewer->setPosition(0, 0);
+  viewer->initCameraParameters();
+  viewer->setBackgroundColor(0.2, 0.3, 0.3);
+  viewer->setCameraPosition(0, 0, 0, 0, -1, 0); 
+  // viewer->registerKeyboardCallback(&Receiver::keyboardEvent);
+
+  return viewer;
+}
 
 int main(int argc, char **argv)
 {  
@@ -356,10 +356,13 @@ int main(int argc, char **argv)
 
   bool running;
 
+  boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer;
+  viewer = createWitch();
+
   if(ros::ok())  { running = true; }
   else {return 0;}
 
-  Receiver receiver(topicName, imageFormat, running);
+  Receiver receiver(topicName, imageFormat, running, viewer);
 
 
   ros::spin();   
