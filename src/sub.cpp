@@ -6,6 +6,7 @@
 #include <iostream>
 #include <cassert>
 #include <mutex>
+#include <thread>
 
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/highgui/highgui.hpp>
@@ -107,7 +108,7 @@ class Receiver
         *itC = cameraInfo->K[i];
       }
     }
-
+// private:
     void callback(const sensor_msgs::ImageConstPtr& msg, const sensor_msgs::CameraInfoConstPtr colorInfo)
     {
       ROS_INFO("msg frame_id: %s", msg->header.frame_id.c_str());
@@ -129,7 +130,7 @@ class Receiver
           cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::TYPE_16UC1);
           depth = cv_ptr->image;
           imageDisp();
-          cloudDisp();
+          cloudViewer();
         }
       else if(msg->header.frame_id.c_str() == "kinect2_ir_optical_frame") //ir)
         { 
@@ -164,22 +165,23 @@ class Receiver
       else{ ROS_INFO("No valid Mat supplied to display"); }
     }
 
-    void cloudDisp()
-    {      
+    void cloudViewer()
+    {     
+      int v1(0);
+      cv::Mat color, depth;
+      const std::string cloudName = "depth cloud";
+
+      lock.lock();
+      depth = this->depth;
+      updateCloud = false;
+      lock.unlock(); 
+
       cloud = pcl::PointCloud<pcl::PointXYZ>::Ptr(new pcl::PointCloud<pcl::PointXYZ>());
       cloud->height = depth.rows;
       cloud->width = depth.cols;
       cloud->is_dense = false;
       cloud->points.resize(cloud->height * cloud->width);          
       createLookup(this->depth.cols, this->depth.rows);
-      cloudViewer();
-    }
-
-    void cloudViewer()
-    {     
-      int v1(0);
-      cv::Mat color, depth;
-      const std::string cloudName = "depth cloud";
 
       witch->setSize(depth.cols, depth.rows);
       witch->registerKeyboardCallback(&Receiver::keyboardEvent, *this); 
@@ -188,11 +190,6 @@ class Receiver
       
       if(!witch->wasStopped())
       {        
-        lock.lock();
-        depth = this->depth;
-        updateCloud = false;
-        lock.unlock(); 
-
         createCloud(depth, cloud);
         witch->addPointCloud<pcl::PointXYZ>(cloud, depth_color_handler, cloudName, v1); 
         if(updateCloud)
@@ -206,10 +203,10 @@ class Receiver
           witch->removePointCloud(cloudName); 
           witch->updatePointCloud(cloud, cloudName);
         }          
-        witch->spinOnce(10, true);
+        witch->spinOnce(10);
         boost::this_thread::sleep(boost::posix_time::microseconds(100)); 
-        updateCloud = true; 
       } 
+        updateCloud = true; 
     }
 
     void keyboardEvent(const pcl::visualization::KeyboardEvent &event, void * viewer_void)
