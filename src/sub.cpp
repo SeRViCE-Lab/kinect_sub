@@ -69,8 +69,7 @@ class Receiver
     cv::Mat lookupX, lookupY;
 
     pcl::PointCloud<pcl::PointXYZ>::Ptr cloud;
-    std::mutex lock;
-    const std::string cloudName; 
+    std::mutex lock; 
     boost::shared_ptr<pcl::visualization::PCLVisualizer> witch;
 
   public:
@@ -78,7 +77,7 @@ class Receiver
       : running(running), updateCloud(false), GoColor(false), GoDepth(false), GoIr(false), topicName(topicName), 
       imageFormat(imageFormat), windowName(imageFormat + " viewer"), basetopic("/kinect2"), 
       subName(basetopic + "/" + topicName + "/" + "image_" + imageFormat ), topicCamInfoColor(basetopic + "/hd" + "/camera_info"), 
-      subImage(nc, subName, 1), subCam(nc, topicCamInfoColor, 1), cloudName("depth cloud"), witch(viewer),
+      subImage(nc, subName, 1), subCam(nc, topicCamInfoColor, 1), witch(viewer),
       sync(syncPolicy(10), subImage, subCam)
       {
         sync.registerCallback(boost::bind(&Receiver::callback, this, _1, _2) );
@@ -177,47 +176,40 @@ class Receiver
     }
 
     void cloudViewer()
-    {
-      cv::Mat color, depth;
-      const std::string clouder = "clouder";
-
+    {     
       int v1(0);
-      pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> depth_color_handler(cloud, 255, 0, 255);
+      cv::Mat color, depth;
+      const std::string cloudName = "depth cloud";
+
       witch->setSize(depth.cols, depth.rows);
+      witch->registerKeyboardCallback(&Receiver::keyboardEvent, *this); 
+      pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> depth_color_handler(cloud, 255, 0, 255);
       witch->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 0.5, cloudName, v1);  
-      witch->registerKeyboardCallback(&Receiver::keyboardEvent, *this);  
-
-      if(!updateCloud && !witch->wasStopped())
-      {                
+      
+      if(!witch->wasStopped())
+      {        
         lock.lock();
-        color = this->color;
         depth = this->depth;
-        witch = this->witch;
         updateCloud = false;
-        lock.unlock();
-        createCloud(depth, cloud);
-        witch->addPointCloud<pcl::PointXYZ>(cloud, depth_color_handler, cloudName, v1);    
-        witch->spinOnce(10, true);
-        boost::this_thread::sleep(boost::posix_time::microseconds(100));      
-        updateCloud = true;
-      }      
+        lock.unlock(); 
 
-      else if(updateCloud && !witch->wasStopped())
-      {
-        lock.lock();
-        color = this->color;
-        depth = this->depth;  
-        witch = this->witch;        
-        updateCloud = false;
-        lock.unlock();
-
-        witch->removePointCloud(cloudName);          
         createCloud(depth, cloud);
-        witch->updatePointCloud(cloud, clouder);
+        witch->addPointCloud<pcl::PointXYZ>(cloud, depth_color_handler, cloudName, v1); 
+        if(updateCloud)
+        {
+          lock.lock();
+          depth = this->depth;        
+          updateCloud = false;
+          lock.unlock();
+
+          createCloud(depth, cloud);
+          witch->removePointCloud(cloudName); 
+          witch->updatePointCloud(cloud, cloudName);
+        }          
         witch->spinOnce(10, true);
-        boost::this_thread::sleep(boost::posix_time::microseconds(100));
-      }       
- 
+        boost::this_thread::sleep(boost::posix_time::microseconds(100)); 
+        updateCloud = true; 
+      } 
     }
 
     void keyboardEvent(const pcl::visualization::KeyboardEvent &event, void * viewer_void)
@@ -360,7 +352,11 @@ int main(int argc, char **argv)
   viewer = createWitch();
 
   if(ros::ok())  { running = true; }
-  else {return 0;}
+  else 
+  {
+    viewer->close();
+    return 0;
+  }
 
   Receiver receiver(topicName, imageFormat, running, viewer);
 
