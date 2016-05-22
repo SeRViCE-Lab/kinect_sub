@@ -151,7 +151,7 @@ add_definitions(${PCL_DEFINITIONS})
 
 ## Declare a C++ executable
 add_executable(sub src/sub.cpp)
-#add_executable(subAll src/subAll.cpp)
+add_executable(subAll src/subAll.cpp)
 
 ## Add cmake target dependencies of the executable
 ## same as for the library above
@@ -159,7 +159,7 @@ add_executable(sub src/sub.cpp)
 
 ## Specify libraries to link a library or executable target against
 target_link_libraries(sub   ${catkin_LIBRARIES}  ${OpenCV_LIBRARIES}  ${PCL_LIBRARIES}  ${kinect2_bridge_LIBRARIES} )
-#target_link_libraries(subAll   ${catkin_LIBRARIES}  ${OpenCV_LIBRARIES}  ${PCL_LIBRARIES}  ${kinect2_bridge_LIBRARIES} )
+target_link_libraries(subAll   ${catkin_LIBRARIES}  ${OpenCV_LIBRARIES}  ${PCL_LIBRARIES}  ${kinect2_bridge_LIBRARIES} )
 #############
 ## Install ##
 #############
