@@ -27,17 +27,11 @@
 #include <message_filters/synchronizer.h>
 #include <message_filters/sync_policies/approximate_time.h>
 
-std::string topicName;
-std::string imageFormat;
-
-
 void help()
 {
   std::cout << " USAGE: " << std::endl;
-  std::cout << "          rosrun kinect_sub <topicName> <imageFormat>" << std::endl;
-  std::cout <<"           topicName = {<hd> | <qhd> | <sd> }         " << std::endl;
-  std::cout <<"           imageFormat = {<ir> | <depth_rect>  | <color> } " << std::endl;
-  std::cout <<"           imageFormat = {<ir_rect> | <depth_rect>  | <color_rect> } " << std::endl;
+  std::cout << "          rosrun kinect_sub sub" << std::endl;
+  std::cout <<"                                " << std::endl;
 }
 
 namespace nodes
@@ -50,8 +44,7 @@ class Receiver
   private:
     bool running, updateCloud, updateImage, save;
     ros::NodeHandle nc;
-    // image_transport::ImageTransport it;
-    std::string topicName, imageFormat, windowName;
+    std::string windowName;
     const std::string basetopic;
     std::string subNameColor, subNameDepth;
     cv_bridge::CvImagePtr cv_ptr;    
@@ -79,10 +72,9 @@ class Receiver
     std::ostringstream oss;
 
   public:
-    Receiver(std::string topicName, std::string imageFormat)
-      : updateCloud(false), updateImage(false), save(false), topicName(topicName), 
-      imageFormat(imageFormat), basetopic("/kinect2"), subNameColor(basetopic + "/qhd" + "/image_color_rect"), 
-      subNameDepth(basetopic + "/" + "qhd" + "/image_depth_rect"), topicCamInfoColor(basetopic + "/hd" + "/camera_info"), 
+    Receiver()
+      : updateCloud(false), updateImage(false), save(false), basetopic("/kinect2"), 
+      subNameColor(basetopic + "/qhd" + "/image_color_rect"), subNameDepth(basetopic + "/" + "qhd" + "/image_depth_rect"), topicCamInfoColor(basetopic + "/hd" + "/camera_info"), 
       subImageColor(nc, subNameColor, 1), subImageDepth(nc, subNameDepth, 1), subInfoCam(nc, topicCamInfoColor, 1),
       sync(syncPolicy(10), subImageColor, subImageDepth, subInfoCam), spinner(0)
       {    
@@ -372,39 +364,20 @@ int main(int argc, char **argv)
 {  
   ros::init(argc, argv, "subscriber", ros::init_options::AnonymousName);
 
-  bool running;
-  if(ros::ok())  { running = true; }
-  else if(!ros::ok) { return 0;}
+  help();
 
-  if (argc <3 )
-    {
-      ROS_INFO("You must supply the topic arguments"); 
-      help();
-      return 0;
-    }
-
-  for(size_t i = 1; i < (size_t)argc; ++i)  
-  {      
-      topicName = argv[1];
-      imageFormat = argv[2]; 
-  }
-
-  if(imageFormat == "ir_rect" || imageFormat == "ir" && topicName != "sd")
-    {
-      ROS_INFO("for ir Images, topic name must be \"sd\"");
-      abort();
-    }
-
-  assert(imageFormat == "ir" or "ir_rect" or "color" or "color_rect" or "depth" or "depth_rect" or "depth_rect/compressed" or "depth/compressed" or  "mono" or  "mono_rect"\
-          and "\nimage format should be of one of the above" );
-
-  Receiver receiver(topicName, imageFormat);
+  Receiver receiver;
 
   ROS_INFO("Starting point clouds rendering ...");
 
   receiver.run();
+
+  if(!ros::ok())
+  {
+    return 0;
+  }
+  
   ros::shutdown();
-  ros::spin();
 
   return 0;
 }
