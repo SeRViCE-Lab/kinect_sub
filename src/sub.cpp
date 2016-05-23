@@ -53,6 +53,7 @@ class Receiver
     typedef message_filters::Subscriber<sensor_msgs::Image> imageMessageSub;
     typedef message_filters::Subscriber<sensor_msgs::CameraInfo> camInfoSub;
     typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::Image, sensor_msgs::CameraInfo> syncPolicy;
+    // typedef message_filters::sync_policies::ExactTime<sensor_msgs::Image, sensor_msgs::Image, sensor_msgs::CameraInfo> syncPolicy;
 
     imageMessageSub subImageColor, subImageDepth;
     camInfoSub subInfoCam, subInfoDepth;
@@ -76,9 +77,8 @@ class Receiver
       : updateCloud(false), updateImage(false), save(false), basetopic("/kinect2"), 
       subNameColor(basetopic + "/qhd" + "/image_color_rect"), subNameDepth(basetopic + "/" + "qhd" + "/image_depth_rect"), topicCamInfoColor(basetopic + "/hd" + "/camera_info"), 
       subImageColor(nc, subNameColor, 1), subImageDepth(nc, subNameDepth, 1), subInfoCam(nc, topicCamInfoColor, 1),
-      sync(syncPolicy(10), subImageColor, subImageDepth, subInfoCam), spinner(0)
+      sync(syncPolicy(10), subImageColor, subImageDepth, subInfoCam), spinner(3), frame(0)
       {    
-        cv::startWindowThread();
         //initialize the K matrices or segfault
         cameraMatrixColor = cv::Mat::zeros(3, 3, CV_64F);        
         cameraMatrixDepth = cv::Mat::zeros(3, 3, CV_64F);
@@ -125,9 +125,11 @@ class Receiver
       cloud->is_dense = false;
       cloud->points.resize(cloud->height * cloud->width);
       createLookup(this->color.cols, this->color.rows);
-
+      
       imageDispThread = std::thread(&Receiver::imageDisp, this);
       cloudViewer();
+      
+      ros::waitForShutdown();
     }
 
     void end()
@@ -135,7 +137,9 @@ class Receiver
       spinner.stop();
 
       running = false;
+
       imageDispThread.join();
+      std::cout << "destroyed clouds visualizer" << std::endl;
     }
 
     void callback(const sensor_msgs::ImageConstPtr imageColor, const sensor_msgs::ImageConstPtr imageDepth, const sensor_msgs::CameraInfoConstPtr colorInfo)
@@ -180,7 +184,8 @@ class Receiver
 
     void imageDisp()
     {
-      cv::Mat color, depth;   
+      cv::Mat color, depth;
+      cv::Mat color_gray;   
 
       for(; running && ros::ok();)
       {
@@ -192,7 +197,27 @@ class Receiver
           updateImage = false;
           lock.unlock();
 
-          cv::imshow("color viewer", color);
+          //gray out and blur colored image
+          cvtColor(color, color_gray, CV_BGR2GRAY);
+          GaussianBlur(color_gray, color_gray, cv::Size(9, 9), 2, 2);
+          std::vector<cv::Vec3f> circles;
+
+          //reduce noise to avoid false circles
+          HoughCircles(color_gray, circles, CV_HOUGH_GRADIENT, 1, color_gray.rows/8, 200, 100, 0, 0);
+
+          //Draw the circles
+          for (size_t i = 0; i < circles.size(); ++i)
+          {
+            cv::Point center(cvRound(circles[i][0]), cvRound(circles[i][1]));
+            int radius = cvRound(circles[i][2]);
+            //circle center
+            circle(color, center, 3, cv::Scalar(0, 255, 0), -1, 8, 0);
+            circle(color, center, radius, cv::Scalar(0, 0, 255), 3, 8, 0);
+          }
+
+          cv::namedWindow("Hough Image", CV_WINDOW_AUTOSIZE);
+
+          cv::imshow("Hough Image", color);
           cv::imshow("depth viewer", depth);
         }
 
@@ -260,7 +285,7 @@ class Receiver
           }
         }          
         viewer->spinOnce(10);
-        boost::this_thread::sleep(boost::posix_time::microseconds(100)); 
+        // boost::this_thread::sleep(boost::posix_time::microseconds(100)); 
       } 
       viewer->close();
     }
@@ -366,11 +391,11 @@ int main(int argc, char **argv)
 
   help();
 
-  Receiver receiver;
-
   ROS_INFO("Starting point clouds rendering ...");
 
+  Receiver receiver;
   receiver.run();
+  // receiver.imageDisp();
 
   if(!ros::ok())
   {
@@ -378,6 +403,4 @@ int main(int argc, char **argv)
   }
   
   ros::shutdown();
-
-  return 0;
 }
