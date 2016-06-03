@@ -49,6 +49,7 @@ namespace nodes
   enum Mode { color = 0,  depth = 1,  ir = 2,   mono = 3 };
 }
 
+// template <typename PointT>
 class Receiver
 {
   private:
@@ -75,8 +76,10 @@ class Receiver
     pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cloud;
     pcl::PCDWriter writer;
     std::mutex lock; 
+    std::mutex stl_lock;
     ros::AsyncSpinner spinner;
-    std::thread imageDispThread, modelDispThread;
+    std::thread imageDispThread;
+    std::thread modelDispThread;
     std::vector<int> params;
 
     size_t frame;
@@ -139,11 +142,10 @@ class Receiver
       cloud->points.resize(cloud->height * cloud->width);
       makeLookup(this->color.cols, this->color.rows);
 
-      modelDispThread = std::thread(&Receiver::loadSTL, this, argv[1]);            
-      imageDispThread = std::thread(&Receiver::imageDisp, this);
-
-      cloudViewer();
-      
+      modelDispThread = std::thread(&Receiver::loadSTL, this, argv[1]); 
+      // loadSTL(argv[1]);   
+      cloudViewer();        
+      imageDispThread = std::thread(&Receiver::imageDisp, this);      
       ros::waitForShutdown();
     }
 
@@ -153,8 +155,8 @@ class Receiver
 
       running = false;
 
-      imageDispThread.join();
       modelDispThread.join();
+      imageDispThread.join();
       std::cout << "destroyed clouds visualizer" << std::endl;
     }
 
@@ -197,6 +199,100 @@ class Receiver
       cv_bridge::CvImageConstPtr pCvImage;
       pCvImage = cv_bridge::toCvShare(msgImage, msgImage->encoding);
       pCvImage->image.copyTo(image);
+    }
+
+    void loadSTL(const std::string& filename)
+    {
+        int SAMPLE_POINTS_ = 100;
+        float leaf_size = 5;
+        pcl::PolygonMesh mesh;
+        pcl::io::loadPolygonFileSTL (filename, mesh) ;
+        std::vector<int> stl_file_indices = pcl::console::parse_file_extension_argument(argc, argv, ".stl");
+
+        if (stl_file_indices.size () != 1)
+        {
+          ROS_INFO("Need a single output STL file to continue.\n");
+          abort();
+        }
+
+        vtkSmartPointer<vtkPolyData> polydata1 = vtkSmartPointer<vtkPolyData>::New ();;
+        if (stl_file_indices.size () == 1)
+        {
+          pcl::PolygonMesh mesh;
+          pcl::io::loadPolygonFileSTL (argv[stl_file_indices[0]], mesh);
+          pcl::io::mesh2vtk (mesh, polydata1);
+        }
+        
+        //make sure that the polygons are triangles!
+        vtkSmartPointer<vtkTriangleFilter> triangleFilter = vtkSmartPointer<vtkTriangleFilter>::New ();
+        #if VTK_MAJOR_VERSION < 6
+          triangleFilter->SetInput (polydata1);
+        #else
+          triangleFilter->SetInputData (polydata1);
+        #endif
+          triangleFilter->Update ();
+
+      vtkSmartPointer<vtkPolyDataMapper> triangleMapper = vtkSmartPointer<vtkPolyDataMapper>::New ();
+      triangleMapper->SetInputConnection (triangleFilter->GetOutputPort ());
+      triangleMapper->Update();
+      polydata1 = triangleMapper->GetInput();
+
+      bool INTER_VIS = false;
+      bool VIS = true;
+
+      if (INTER_VIS)
+       {
+         pcl::visualization::PCLVisualizer vis;
+         vis.addModelFromPolyData (polydata1, "mesh1", 0);
+         vis.setRepresentationToSurfaceForAllActors ();
+         vis.spin();
+       }
+
+       pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_1 (new pcl::PointCloud<pcl::PointXYZ>);
+       uniform_sampling(polydata1, SAMPLE_POINTS_, *cloud_1);
+
+       if(INTER_VIS)
+       {
+        pcl::visualization::PCLVisualizer vis_sampled;
+        vis_sampled.addPointCloud(cloud_1);
+        vis_sampled.spin();
+       }
+
+       //Voxelgrid
+       pcl::VoxelGrid<pcl::PointXYZ> grid_;
+       grid_.setInputCloud(cloud_1);
+       grid_.setLeafSize(leaf_size, leaf_size, leaf_size);
+
+       pcl::PointCloud<pcl::PointXYZ>::Ptr res(new pcl::PointCloud<pcl::PointXYZ>);
+       grid_.filter(*res);
+
+       pcl::visualization::PCLVisualizer vis3; 
+       bool cloud_init = false;
+       if(!cloud_init)
+       {        
+        vis3.setShowFPS(true);
+        vis3.setPosition(50, 50);
+        vis3.setSize(depth.cols, depth.rows);
+        // vis3.setBackgroundColor(0.2, 0.3, 0.3);
+        cloud_init = !cloud_init;
+       }
+
+      if(VIS)
+      {       
+        for(; running and ros::ok() ;)
+        {         
+          if(!vis3.updatePointCloud(res, "Model Voxel Cloud") && updateModel)              
+          {               
+            stl_lock.lock();          
+            vis3.addPointCloud(res, "Model Voxel Cloud");
+            updateModel = false;     
+            stl_lock.unlock();
+          }   
+            vis3.resetCameraViewpoint("Model Voxel Cloud");
+            vis3.registerKeyboardCallback(&Receiver::keyboardEvent, *this);  
+            vis3.spinOnce(10); 
+        }       
+      }
     }
 
     void imageDisp()
@@ -323,95 +419,6 @@ class Receiver
          break;
         }
       }
-    }
-
-    void loadSTL(const std::string& filename)
-    {
-        int SAMPLE_POINTS_ = 100;
-        float leaf_size = 5;
-        pcl::PolygonMesh mesh;
-        pcl::io::loadPolygonFileSTL (filename, mesh) ;
-        std::vector<int> stl_file_indices = pcl::console::parse_file_extension_argument(argc, argv, ".stl");
-
-        if (stl_file_indices.size () != 1)
-        {
-          ROS_INFO("Need a single output STL file to continue.\n");
-          abort();
-        }
-
-        vtkSmartPointer<vtkPolyData> polydata1 = vtkSmartPointer<vtkPolyData>::New ();;
-        if (stl_file_indices.size () == 1)
-        {
-          pcl::PolygonMesh mesh;
-          pcl::io::loadPolygonFileSTL (argv[stl_file_indices[0]], mesh);
-          pcl::io::mesh2vtk (mesh, polydata1);
-        }
-        
-        //make sure that the polygons are triangles!
-        vtkSmartPointer<vtkTriangleFilter> triangleFilter = vtkSmartPointer<vtkTriangleFilter>::New ();
-        #if VTK_MAJOR_VERSION < 6
-          triangleFilter->SetInput (polydata1);
-        #else
-          triangleFilter->SetInputData (polydata1);
-        #endif
-          triangleFilter->Update ();
-
-      vtkSmartPointer<vtkPolyDataMapper> triangleMapper = vtkSmartPointer<vtkPolyDataMapper>::New ();
-      triangleMapper->SetInputConnection (triangleFilter->GetOutputPort ());
-      triangleMapper->Update();
-      polydata1 = triangleMapper->GetInput();
-
-      bool INTER_VIS = false;
-      bool VIS = true;
-
-      if (INTER_VIS)
-       {
-         pcl::visualization::PCLVisualizer vis;
-         vis.addModelFromPolyData (polydata1, "mesh1", 0);
-         vis.setRepresentationToSurfaceForAllActors ();
-         vis.spin();
-       }
-
-       pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_1 (new pcl::PointCloud<pcl::PointXYZ>);
-       uniform_sampling(polydata1, SAMPLE_POINTS_, *cloud_1);
-
-       if(INTER_VIS)
-       {
-        pcl::visualization::PCLVisualizer vis_sampled;
-        vis_sampled.addPointCloud(cloud_1);
-        vis_sampled.spin();
-       }
-
-       //Voxelgrid
-       pcl::VoxelGrid<pcl::PointXYZ> grid_;
-       grid_.setInputCloud(cloud_1);
-       grid_.setLeafSize(leaf_size, leaf_size, leaf_size);
-
-       pcl::PointCloud<pcl::PointXYZ>::Ptr res(new pcl::PointCloud<pcl::PointXYZ>);
-       grid_.filter(*res);
-
-       pcl::visualization::PCLVisualizer vis3("Model Voxel Cloud"); 
-       if(VIS)
-       {        
-        for(; running && ros::ok() ;)       
-        {
-          if(updateModel)
-          {
-            lock.lock();
-            updateModel = false;
-            lock.unlock();
-
-            vis3.setShowFPS(true);
-            vis3.setPosition(50, 50);
-            vis3.setSize(depth.cols, depth.rows);
-            vis3.setBackgroundColor(0.2, 0.3, 0.3);
-
-            vis3.addPointCloud(res);
-            vis3.registerKeyboardCallback(&Receiver::keyboardEvent, *this);   
-            vis3.spin();       
-          }
-        }
-       }
     }
 
     inline double uniform_deviate (int seed)
