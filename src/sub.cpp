@@ -12,11 +12,21 @@
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
 
+#include <pcl/io/pcd_io.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
-#include <pcl/io/pcd_io.h>
+#include <pcl/io/vtk_lib_io.h>
+#include <pcl/console/parse.h>
+#include <pcl/common/transforms.h>
+#include <pcl/filters/voxel_grid.h>
 #include <pcl/visualization/cloud_viewer.h>
 #include <pcl/visualization/pcl_visualizer.h>
+
+#include <vtkVersion.h>
+#include <vtkTriangle.h>
+#include <vtkSTLReader.h>
+#include <vtkTriangleFilter.h>
+#include <vtkPolyDataMapper.h>
 
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/CameraInfo.h>
@@ -30,7 +40,7 @@
 void help()
 {
   std::cout << " USAGE: " << std::endl;
-  std::cout << "          rosrun kinect_sub sub" << std::endl;
+  std::cout << "          rosrun kinect_sub sub <name of stl plate>" << std::endl;
   std::cout <<"                                " << std::endl;
 }
 
@@ -42,7 +52,7 @@ namespace nodes
 class Receiver
 {
   private:
-    bool running, updateCloud, updateImage, save;
+    bool running, updateCloud, updateImage, updateModel, save;
     ros::NodeHandle nc;
     std::string windowName;
     const std::string basetopic;
@@ -66,18 +76,21 @@ class Receiver
     pcl::PCDWriter writer;
     std::mutex lock; 
     ros::AsyncSpinner spinner;
-    std::thread imageDispThread;
+    std::thread imageDispThread, modelDispThread;
     std::vector<int> params;
 
     size_t frame;
     std::ostringstream oss;
 
+    int argc;
+    char** argv;
+
   public:
-    Receiver()
-      : updateCloud(false), updateImage(false), save(false), basetopic("/kinect2"), 
+    Receiver(int argc, char** argv)
+      : updateCloud(false), updateImage(false), updateModel(false), save(false), basetopic("/kinect2"), 
       subNameColor(basetopic + "/qhd" + "/image_color_rect"), subNameDepth(basetopic + "/" + "qhd" + "/image_depth_rect"), topicCamInfoColor(basetopic + "/hd" + "/camera_info"), 
       subImageColor(nc, subNameColor, 1), subImageDepth(nc, subNameDepth, 1), subInfoCam(nc, topicCamInfoColor, 1),
-      sync(syncPolicy(10), subImageColor, subImageDepth, subInfoCam), spinner(3), frame(0)
+      sync(syncPolicy(10), subImageColor, subImageDepth, subInfoCam), spinner(3), frame(0),  argc(argc), argv(argv)
       {    
         //initialize the K matrices or segfault
         cameraMatrixColor = cv::Mat::zeros(3, 3, CV_64F);        
@@ -111,7 +124,7 @@ class Receiver
       spinner.start();
       running = true;
       std::chrono::milliseconds duration(1);
-      while(!updateImage || !updateCloud)
+      while(!updateImage || !updateCloud || !updateModel)
       {
         if(!ros::ok())
         {
@@ -125,8 +138,10 @@ class Receiver
       cloud->is_dense = false;
       cloud->points.resize(cloud->height * cloud->width);
       makeLookup(this->color.cols, this->color.rows);
-      
+
+      modelDispThread = std::thread(&Receiver::loadSTL, this, argv[1]);            
       imageDispThread = std::thread(&Receiver::imageDisp, this);
+
       cloudViewer();
       
       ros::waitForShutdown();
@@ -139,6 +154,7 @@ class Receiver
       running = false;
 
       imageDispThread.join();
+      modelDispThread.join();
       std::cout << "destroyed clouds visualizer" << std::endl;
     }
 
@@ -163,6 +179,7 @@ class Receiver
       this->depth = depth;
       updateImage = true;
       updateCloud = true;
+      updateModel = true;
       lock.unlock();
     }
 
@@ -218,7 +235,7 @@ class Receiver
           cv::namedWindow("Hough Image", CV_WINDOW_AUTOSIZE);
 
           cv::imshow("Hough Image", color);
-          cv::imshow("depth viewer", depth);
+          // cv::imshow("depth viewer", depth);
         }
 
         int key = cv::waitKey(1);
@@ -308,6 +325,175 @@ class Receiver
       }
     }
 
+    void loadSTL(const std::string& filename)
+    {
+        int SAMPLE_POINTS_ = 100;
+        float leaf_size = 5;
+        pcl::PolygonMesh mesh;
+        pcl::io::loadPolygonFileSTL (filename, mesh) ;
+        std::vector<int> stl_file_indices = pcl::console::parse_file_extension_argument(argc, argv, ".stl");
+
+        if (stl_file_indices.size () != 1)
+        {
+          ROS_INFO("Need a single output STL file to continue.\n");
+          abort();
+        }
+
+        vtkSmartPointer<vtkPolyData> polydata1 = vtkSmartPointer<vtkPolyData>::New ();;
+        if (stl_file_indices.size () == 1)
+        {
+          pcl::PolygonMesh mesh;
+          pcl::io::loadPolygonFileSTL (argv[stl_file_indices[0]], mesh);
+          pcl::io::mesh2vtk (mesh, polydata1);
+        }
+        
+        //make sure that the polygons are triangles!
+        vtkSmartPointer<vtkTriangleFilter> triangleFilter = vtkSmartPointer<vtkTriangleFilter>::New ();
+        #if VTK_MAJOR_VERSION < 6
+          triangleFilter->SetInput (polydata1);
+        #else
+          triangleFilter->SetInputData (polydata1);
+        #endif
+          triangleFilter->Update ();
+
+      vtkSmartPointer<vtkPolyDataMapper> triangleMapper = vtkSmartPointer<vtkPolyDataMapper>::New ();
+      triangleMapper->SetInputConnection (triangleFilter->GetOutputPort ());
+      triangleMapper->Update();
+      polydata1 = triangleMapper->GetInput();
+
+      bool INTER_VIS = false;
+      bool VIS = true;
+
+      if (INTER_VIS)
+       {
+         pcl::visualization::PCLVisualizer vis;
+         vis.addModelFromPolyData (polydata1, "mesh1", 0);
+         vis.setRepresentationToSurfaceForAllActors ();
+         vis.spin();
+       }
+
+       pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_1 (new pcl::PointCloud<pcl::PointXYZ>);
+       uniform_sampling(polydata1, SAMPLE_POINTS_, *cloud_1);
+
+       if(INTER_VIS)
+       {
+        pcl::visualization::PCLVisualizer vis_sampled;
+        vis_sampled.addPointCloud(cloud_1);
+        vis_sampled.spin();
+       }
+
+       //Voxelgrid
+       pcl::VoxelGrid<pcl::PointXYZ> grid_;
+       grid_.setInputCloud(cloud_1);
+       grid_.setLeafSize(leaf_size, leaf_size, leaf_size);
+
+       pcl::PointCloud<pcl::PointXYZ>::Ptr res(new pcl::PointCloud<pcl::PointXYZ>);
+       grid_.filter(*res);
+
+       pcl::visualization::PCLVisualizer vis3("Model Voxel Cloud"); 
+       if(VIS)
+       {        
+        for(; running && ros::ok() ;)       
+        {
+          if(updateModel)
+          {
+            lock.lock();
+            updateModel = false;
+            lock.unlock();
+
+            vis3.setShowFPS(true);
+            vis3.setPosition(50, 50);
+            vis3.setSize(depth.cols, depth.rows);
+            vis3.setBackgroundColor(0.2, 0.3, 0.3);
+
+            vis3.addPointCloud(res);
+            vis3.registerKeyboardCallback(&Receiver::keyboardEvent, *this);   
+            vis3.spin();       
+          }
+        }
+       }
+    }
+
+    inline double uniform_deviate (int seed)
+    {
+      double ran = seed * (1.0 / (RAND_MAX + 1.0));
+      return ran;
+    }
+
+    inline void randPSurface (vtkPolyData * polydata, std::vector<double> * cumulativeAreas, double totalArea, Eigen::Vector4f& p)
+    {
+      float r = static_cast<float> (Receiver::uniform_deviate (rand ()) * totalArea);
+
+      std::vector<double>::iterator low = std::lower_bound (cumulativeAreas->begin (), cumulativeAreas->end (), r);
+      vtkIdType el = vtkIdType (low - cumulativeAreas->begin ());
+
+      double A[3], B[3], C[3];
+      vtkIdType npts = 0;
+      vtkIdType *ptIds = NULL;
+      polydata->GetCellPoints (el, npts, ptIds);
+      polydata->GetPoint (ptIds[0], A);
+      polydata->GetPoint (ptIds[1], B);
+      polydata->GetPoint (ptIds[2], C);
+      Receiver::randomPointTriangle (float (A[0]), float (A[1]), float (A[2]), 
+                           float (B[0]), float (B[1]), float (B[2]), 
+                           float (C[0]), float (C[1]), float (C[2]), p);
+    }
+
+    inline void randomPointTriangle (float a1, float a2, float a3, float b1, float b2, float b3, float c1, float c2, float c3, \
+                         Eigen::Vector4f& p)
+    {
+      float r1 = static_cast<float> (uniform_deviate (rand ()));
+      float r2 = static_cast<float> (uniform_deviate (rand ()));
+      float r1sqr = sqrtf (r1);
+      float OneMinR1Sqr = (1 - r1sqr);
+      float OneMinR2 = (1 - r2);
+      a1 *= OneMinR1Sqr;
+      a2 *= OneMinR1Sqr;
+      a3 *= OneMinR1Sqr;
+      b1 *= OneMinR2;
+      b2 *= OneMinR2;
+      b3 *= OneMinR2;
+      c1 = r1sqr * (r2 * c1 + b1) + a1;
+      c2 = r1sqr * (r2 * c2 + b2) + a2;
+      c3 = r1sqr * (r2 * c3 + b3) + a3;
+      p[0] = c1;
+      p[1] = c2;
+      p[2] = c3;
+      p[3] = 0;
+    }
+
+    void  uniform_sampling (vtkSmartPointer<vtkPolyData> polydata, size_t n_samples, pcl::PointCloud<pcl::PointXYZ> & cloud_out)
+    {
+      polydata->BuildCells ();
+      vtkSmartPointer<vtkCellArray> cells = polydata->GetPolys ();
+
+      double p1[3], p2[3], p3[3], totalArea = 0;
+      std::vector<double> cumulativeAreas (cells->GetNumberOfCells (), 0);
+      size_t i = 0;
+      vtkIdType npts = 0, *ptIds = NULL;
+      for (cells->InitTraversal (); cells->GetNextCell (npts, ptIds); i++)
+      {
+        polydata->GetPoint (ptIds[0], p1);
+        polydata->GetPoint (ptIds[1], p2);
+        polydata->GetPoint (ptIds[2], p3);
+        totalArea += vtkTriangle::TriangleArea (p1, p2, p3);
+        cumulativeAreas[i] = totalArea;
+      }
+
+      cloud_out.points.resize (n_samples);
+      cloud_out.width = static_cast<pcl::uint32_t> (n_samples);
+      cloud_out.height = 1;
+
+      for (i = 0; i < n_samples; i++)
+      {
+        Eigen::Vector4f p;
+        randPSurface (polydata, &cumulativeAreas, totalArea, p);
+        cloud_out.points[i].x = p[0];
+        cloud_out.points[i].y = p[1];
+        cloud_out.points[i].z = p[2];
+      }
+    }
+
     void makeCloud(const cv::Mat &depth, cv::Mat &color, pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cloud) const
     {
       const float invalidPt = std::numeric_limits<float>::quiet_NaN();
@@ -393,9 +579,8 @@ int main(int argc, char **argv)
 
   ROS_INFO("Starting point clouds rendering ...");
 
-  Receiver receiver;
+  Receiver receiver(argc, argv);
   receiver.run();
-  // receiver.imageDisp();
 
   if(!ros::ok())
   {
