@@ -124,7 +124,7 @@ class Receiver
       cloud->width = color.cols;
       cloud->is_dense = false;
       cloud->points.resize(cloud->height * cloud->width);
-      createLookup(this->color.cols, this->color.rows);
+      makeLookup(this->color.cols, this->color.rows);
       
       imageDispThread = std::thread(&Receiver::imageDisp, this);
       cloudViewer();
@@ -146,9 +146,9 @@ class Receiver
     {
       cv::Mat color, depth; 
   
-      readCameraInfo(colorInfo, cameraMatrixColor);
-      readImage(imageColor, color);
-      readImage(imageDepth, depth);
+      getCameraInfo(colorInfo, cameraMatrixColor);
+      getImage(imageColor, color);
+      getImage(imageDepth, depth);
 
       // IR image input
       if(color.type() == CV_16U)
@@ -166,7 +166,7 @@ class Receiver
       lock.unlock();
     }
 
-    void readCameraInfo(const sensor_msgs::CameraInfo::ConstPtr cameraInfo, cv::Mat &cameraMatrix) const
+    void getCameraInfo(const sensor_msgs::CameraInfo::ConstPtr cameraInfo, cv::Mat &cameraMatrix) const
     {
       double *itC = cameraMatrix.ptr<double>(0, 0);
       for(size_t i = 0; i < 9; ++i, ++itC)
@@ -175,7 +175,7 @@ class Receiver
       }
     }
 
-    void readImage(const sensor_msgs::Image::ConstPtr msgImage, cv::Mat &image) const
+    void getImage(const sensor_msgs::Image::ConstPtr msgImage, cv::Mat &image) const
     {
       cv_bridge::CvImageConstPtr pCvImage;
       pCvImage = cv_bridge::toCvShare(msgImage, msgImage->encoding);
@@ -230,8 +230,8 @@ class Receiver
             break;
           case ' ':
           case 's':
-            createCloud(depth, color, cloud);
-            saveCloudAndImages(cloud, color, depth);
+            makeCloud(depth, color, cloud);
+            saveAll(cloud, color, depth);
             save = true;
             break;
         }
@@ -244,7 +244,7 @@ class Receiver
     {     
       cv::Mat color, depth;
             
-      createLookup(this->depth.cols, this->depth.rows);
+      makeLookup(this->depth.cols, this->depth.rows);
       boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer (new pcl::visualization::PCLVisualizer("Cloud Viewer"));
       const std::string cloudName = "depth cloud";
 
@@ -254,7 +254,7 @@ class Receiver
       updateCloud = false;
       lock.unlock(); 
 
-      createCloud(depth, color, cloud);
+      makeCloud(depth, color, cloud);
 
       void* viewer_void = NULL;
       viewer->setShowFPS(true);
@@ -275,13 +275,13 @@ class Receiver
           updateCloud = false;
           lock.unlock();
 
-          createCloud(depth, color, cloud);
+          makeCloud(depth, color, cloud);
           viewer->updatePointCloud(cloud, cloudName);
 
           if(save)
           {            
             save = false;
-            saveCloudAndImages(cloud, color, depth);
+            saveAll(cloud, color, depth);
           }
         }          
         viewer->spinOnce(10);
@@ -308,41 +308,41 @@ class Receiver
       }
     }
 
-    void createCloud(const cv::Mat &depth, cv::Mat &color, pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cloud) const
+    void makeCloud(const cv::Mat &depth, cv::Mat &color, pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cloud) const
     {
-      const float badPoint = std::numeric_limits<float>::quiet_NaN();
+      const float invalidPt = std::numeric_limits<float>::quiet_NaN();
 
       // #pragma omp parallel for
       for(int r = 0; r < depth.rows; ++r)
       {
-        pcl::PointXYZRGBA *itP = &cloud->points[r * depth.cols];
-        const uint16_t *itD = depth.ptr<uint16_t>(r);
-        const cv::Vec3b *itC = color.ptr<cv::Vec3b>(r);
+        pcl::PointXYZRGBA *itPtr = &cloud->points[r * depth.cols];
+        const uint16_t *itDepth = depth.ptr<uint16_t>(r);
+        const cv::Vec3b *itColor = color.ptr<cv::Vec3b>(r);
         const float y = lookupY.at<float>(0, r);
         const float *itX = lookupX.ptr<float>();
 
-        for(size_t c = 0; c < (size_t)depth.cols; ++c, ++itP, ++itC, ++itD, ++itX)
+        for(size_t c = 0; c < (size_t)depth.cols; ++c, ++itPtr, ++itColor, ++itDepth, ++itX)
         {
-          register const float depthValue = *itD / 1000.0f;
+          register const float depthVal = *itDepth / 1000.0f;
           // Check for invalid measurements
-          if(*itD == 0)
+          if(*itDepth == 0)
           { // not valid
-            itP->x = itP->y = itP->z = badPoint;
-            itP->rgba = 0;
+            itPtr->x = itPtr->y = itPtr->z = invalidPt;
+            itPtr->rgba = 0;
             continue;
           }
-          itP->z = depthValue;
-          itP->x = *itX * depthValue;
-          itP->y = y * depthValue;
-          itP->b = itC->val[0];
-          itP->g = itC->val[1];
-          itP->r = itC->val[2];
-          itP->a = 255;
+          itPtr->z = depthVal;
+          itPtr->x = *itX * depthVal;
+          itPtr->y = y * depthVal;
+          itPtr->b = itColor->val[0];
+          itPtr->g = itColor->val[1];
+          itPtr->r = itColor->val[2];
+          itPtr->a = 255;
         }
       }
     }
 
-    void saveCloudAndImages(const pcl::PointCloud<pcl::PointXYZRGBA>::ConstPtr cloud, const cv::Mat &color, const cv::Mat &depth)
+    void saveAll(const pcl::PointCloud<pcl::PointXYZRGBA>::ConstPtr cloud, const cv::Mat &color, const cv::Mat &depth)
     {
       oss.str("");
       oss << "./" << std::setfill('0') << std::setw(4) << frame;
@@ -361,7 +361,7 @@ class Receiver
       ++frame;
     }
 
-    void createLookup(size_t width, size_t height)
+    void makeLookup(size_t width, size_t height)
     {
       const float fx = 1.0f / cameraMatrixColor.at<double>(0, 0);
       const float fy = 1.0f / cameraMatrixColor.at<double>(1, 1);
