@@ -173,7 +173,7 @@ class Receiver
       makeLookup(this->color.cols, this->color.rows);
 
       imageDispThread = std::thread(&Receiver::imageDisp, this); 
-      modelDispThread = std::thread(&Receiver::loadSTL, this); 
+      // modelDispThread = std::thread(&Receiver::loadSTL, this); 
   
       cloudViewer();          
       ROS_INFO("after imageDispThread begin");   
@@ -187,7 +187,7 @@ class Receiver
       ROS_INFO("Called end");
       running = false;
       imageDispThread.join();
-      modelDispThread.join();
+      // modelDispThread.join();
       std::cout << "destroyed clouds visualizer" << std::endl;
     }
 
@@ -272,26 +272,23 @@ class Receiver
        pcl::PointCloud<pcl::PointXYZ>::Ptr res(new pcl::PointCloud<pcl::PointXYZ>);
        grid_.filter(*res);
 
-       pcl::visualization::PCLVisualizer vis3; 
-       bool cloud_init = false;
-       if(!cloud_init)
-       {        
-        vis3.setShowFPS(true);
-        vis3.setPosition(50, 50);
-        vis3.setSize(depth.cols, depth.rows);
-        // vis3.setBackgroundColor(0.2, 0.3, 0.3);
-        cloud_init = !cloud_init;
-       }
-
       if(VIS)
-      {          
-        if(!vis3.updatePointCloud(res, "Model Voxel Cloud") && updateModel)              
-        {                        
+      {         
+        pcl::visualization::PCLVisualizer vis3; 
+        bool cloud_init = false;
+
+        if(!cloud_init)
+        {        
+         vis3.setShowFPS(true);
+         vis3.setPosition(50, 50);
+         vis3.setSize(depth.cols, depth.rows);
+         // vis3.setBackgroundColor(0.2, 0.3, 0.3);
+         cloud_init = !cloud_init;
+        }         
           vis3.addPointCloud(res, "Model Voxel Cloud");
-        }   
         vis3.resetCameraViewpoint("Model Voxel Cloud");
-        vis3.registerKeyboardCallback(&Receiver::keyboardEvent, *this);  
-        vis3.spin(); 
+        vis3.registerKeyboardCallback(&Receiver::keyboardEvent, *this); 
+          vis3.spin();  
       }
     }
 
