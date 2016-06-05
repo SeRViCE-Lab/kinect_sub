@@ -112,11 +112,6 @@ class Receiver
     ~Receiver()
     {}   
 
-    void runSTL()
-    {
-      loadSTL();
-    }
-
     void run()
     {
       ROS_INFO("Started Run");
@@ -147,6 +142,7 @@ class Receiver
       this->depth = depth;
       updateImage = true;
       updateCloud = true;
+      updateModel = true;
       lock.unlock();
     }
 
@@ -156,14 +152,17 @@ class Receiver
       // loadSTL();
       ROS_INFO("started spinner");
       running = true;
-      std::chrono::milliseconds duration(1);
-      while(!updateImage || !updateCloud)
+      
+      while(!updateImage || !updateCloud || !updateModel)
       {
         if(!ros::ok())
         {
           return;
         }
-        std::this_thread::sleep_for(duration);
+        // std::cout << "no updates" << std::endl;
+        lock.unlock();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        lock.lock();
       }
       cloud = pcl::PointCloud<pcl::PointXYZRGBA>::Ptr(new pcl::PointCloud<pcl::PointXYZRGBA>());
       cloud->height = color.rows;
@@ -171,12 +170,16 @@ class Receiver
       cloud->is_dense = false;
       cloud->points.resize(cloud->height * cloud->width);
       makeLookup(this->color.cols, this->color.rows);
-
+      
+      cloudViewer(); 
+/*      std::thread imageSTL[]{
+                            (&Receiver::imageDisp, this) ;
+                            (&Receiver::loadSTL, this));
+                            }(); */
+      ROS_INFO("after imageDispThread begin"); 
+      modelDispThread = std::thread(&Receiver::loadSTL, this); 
       imageDispThread = std::thread(&Receiver::imageDisp, this); 
-      // modelDispThread = std::thread(&Receiver::loadSTL, this); 
-  
-      cloudViewer();          
-      ROS_INFO("after imageDispThread begin");   
+             
       ros::waitForShutdown();      
       ROS_INFO("after waitForShutdown");
     }
@@ -187,7 +190,7 @@ class Receiver
       ROS_INFO("Called end");
       running = false;
       imageDispThread.join();
-      // modelDispThread.join();
+      modelDispThread.join();
       std::cout << "destroyed clouds visualizer" << std::endl;
     }
 
@@ -228,6 +231,13 @@ class Receiver
           pcl::io::loadPolygonFileSTL (argv[stl_file_indices[0]], mesh);
           pcl::io::mesh2vtk (mesh, polydata1);
         }
+        // if(stl_file_indices.size() == 1)
+        // {
+        //   vtkSmartPointer<vtkSTLReader> readerQuery = vtkSmartPointer<vtkSTLReader>::New ();
+        //   readerQuery->SetFileName (argv[stl_file_indices[0]]);
+        //   readerQuery->Update ();
+        //   polydata1 = readerQuery->GetOutput ();
+        // }
         
         //make sure that the polygons are triangles!
         vtkSmartPointer<vtkTriangleFilter> triangleFilter = vtkSmartPointer<vtkTriangleFilter>::New ();
@@ -239,11 +249,11 @@ class Receiver
           triangleFilter->Update ();
 
       vtkSmartPointer<vtkPolyDataMapper> triangleMapper = vtkSmartPointer<vtkPolyDataMapper>::New ();
-      triangleMapper->SetInputConnection (triangleFilter->GetOutputPort ());
+      triangleMapper->SetInputConnection ( triangleFilter->GetOutputPort ());
       triangleMapper->Update();
       polydata1 = triangleMapper->GetInput();
 
-      bool INTER_VIS = false;
+      bool INTER_VIS = true;
       bool VIS = true;
 
       if (INTER_VIS)
@@ -260,8 +270,17 @@ class Receiver
        if(INTER_VIS)
        {
         pcl::visualization::PCLVisualizer vis_sampled;
-        vis_sampled.addPointCloud(cloud_1);
-        vis_sampled.spin();
+        while(!vis_sampled.wasStopped())
+        {          
+            vis_sampled.addPointCloud(cloud_1);
+            vis_sampled.spin();
+            if(updateModel){
+            lock.lock();
+            vis_sampled.updatePointCloud(cloud_1);
+            updateModel = false;
+            lock.unlock();
+            vis_sampled.close();}
+        }
        }
 
        //Voxelgrid
@@ -284,11 +303,17 @@ class Receiver
          vis3.setSize(depth.cols, depth.rows);
          // vis3.setBackgroundColor(0.2, 0.3, 0.3);
          cloud_init = !cloud_init;
-        }         
-          vis3.addPointCloud(res, "Model Voxel Cloud");
-        vis3.resetCameraViewpoint("Model Voxel Cloud");
-        vis3.registerKeyboardCallback(&Receiver::keyboardEvent, *this); 
-          vis3.spin();  
+        } 
+        while(!vis3.wasStopped())    
+        {
+          lock.lock();
+          vis3.addPointCloud(res, "Model Voxel Cloud"); 
+          updateModel = false;
+          lock.unlock();
+          vis3.spin(); 
+        }    
+          // vis3.resetCameraViewpoint("Model Voxel Cloud");
+          // vis3.registerKeyboardCallback(&Receiver::keyboardEvent, *this); 
       }
     }
 
