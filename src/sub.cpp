@@ -44,11 +44,6 @@ void help()
   std::cout <<"                                " << std::endl;
 }
 
-namespace nodes
-{
-  enum Mode { color = 0,  depth = 1,  ir = 2,   mono = 3 };
-}
-
 class Receiver
 {
   private:
@@ -63,7 +58,7 @@ class Receiver
     typedef message_filters::Subscriber<sensor_msgs::Image> imageMessageSub;
     typedef message_filters::Subscriber<sensor_msgs::CameraInfo> camInfoSub;
     typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::Image, sensor_msgs::CameraInfo> syncPolicy;
-    // typedef message_filters::sync_policies::ExactTime<sensor_msgs::Image, sensor_msgs::Image, sensor_msgs::CameraInfo> syncPolicy;
+    // typedef message_filters::sync_policies::ExactTime<sensor_msgs::Image, sensor_msgs::Image, sensor_msgs::CameraInfo> syncPolicyExact; //not used
 
     imageMessageSub subImageColor, subImageDepth;
     camInfoSub subInfoCam, subInfoDepth;
@@ -78,12 +73,12 @@ class Receiver
     ros::AsyncSpinner spinner;
     std::thread imageDispThread, modelDispThread;
     std::vector<int> opt;
-
     size_t frame;
     std::ostringstream oss;
-
     int argc;
     char** argv;
+      
+    std::vector<std::thread> threads;
 
   public:
     Receiver(int argc, char** argv)
@@ -93,13 +88,11 @@ class Receiver
       sync(syncPolicy(10), subImageColor, subImageDepth, subInfoCam), spinner(1), frame(0),  argc(argc), argv(argv)
       {    
         ROS_INFO("Constructed Receiver");
-        //initialize the K matrices or segfault
         cameraMatrixColor = cv::Mat::zeros(3, 3, CV_64F);        
         cameraMatrixDepth = cv::Mat::zeros(3, 3, CV_64F);
       
         sync.registerCallback(boost::bind(&Receiver::callback, this, _1, _2, _3) );
 
-        // loadSTL(); 
         opt.push_back(cv::IMWRITE_JPEG_QUALITY);
         opt.push_back(100);
         opt.push_back(cv::IMWRITE_PNG_COMPRESSION);
@@ -119,10 +112,8 @@ class Receiver
 
     void run()
     {
-      ROS_INFO("Started Run");
       begin();
       end();
-      ROS_INFO("called end()");
     }
 
   private:
@@ -153,16 +144,11 @@ class Receiver
     void begin()
     {
       spinner.start();
-      // loadSTL();
       ROS_INFO("started spinner");
       running = true;
       std::chrono::milliseconds duration(1);
       while(!updateImage || !updateCloud)
       {
-        if(!ros::ok())
-        {
-          return;
-        }
         std::this_thread::sleep_for(duration);
       }
       cloud = pcl::PointCloud<pcl::PointXYZRGBA>::Ptr(new pcl::PointCloud<pcl::PointXYZRGBA>());
@@ -171,23 +157,22 @@ class Receiver
       cloud->is_dense = false;
       cloud->points.resize(cloud->height * cloud->width);
       makeLookup(this->color.cols, this->color.rows);
-
-      imageDispThread = std::thread(&Receiver::imageDisp, this); 
-      // modelDispThread = std::thread(&Receiver::loadSTL, this); 
-  
-      cloudViewer();          
-      ROS_INFO("after imageDispThread begin");   
-      ros::waitForShutdown();      
-      ROS_INFO("after waitForShutdown");
+        
+      //spawn the threads
+      threads.push_back(std::thread(&Receiver::imageDisp, this));
+      threads.push_back(std::thread(&Receiver::loadSTL, this)); 
+      // threads.push_back(std::thread(&Receiver::cloudViewer, this));  
+      cloudViewer();    
+      //call join on each thread in turn
+      std::for_each(threads.begin(), threads.end(), \
+                    std::mem_fn(&std::thread::join)); 
     }
 
     void end()
     {
-      spinner.stop();
-      ROS_INFO("Called end");
+      spinner.stop();         
       running = false;
-      imageDispThread.join();
-      // modelDispThread.join();
+      
       std::cout << "destroyed clouds visualizer" << std::endl;
     }
 
@@ -243,8 +228,8 @@ class Receiver
       triangleMapper->Update();
       polydata1 = triangleMapper->GetInput();
 
-      bool INTER_VIS = false;
-      bool VIS = true;
+      bool INTER_VIS = true;
+      bool VIS = false;
 
       if (INTER_VIS)
        {
@@ -276,7 +261,7 @@ class Receiver
       {         
         pcl::visualization::PCLVisualizer vis3; 
         bool cloud_init = false;
-
+/*
         if(!cloud_init)
         {        
          vis3.setShowFPS(true);
@@ -284,10 +269,10 @@ class Receiver
          vis3.setSize(depth.cols, depth.rows);
          // vis3.setBackgroundColor(0.2, 0.3, 0.3);
          cloud_init = !cloud_init;
-        }         
+        }    */     
           vis3.addPointCloud(res, "Model Voxel Cloud");
-        vis3.resetCameraViewpoint("Model Voxel Cloud");
-        vis3.registerKeyboardCallback(&Receiver::keyboardEvent, *this); 
+/*        vis3.resetCameraViewpoint("Model Voxel Cloud");
+        vis3.registerKeyboardCallback(&Receiver::keyboardEvent, *this); */
           vis3.spin();  
       }
     }
