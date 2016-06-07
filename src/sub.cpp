@@ -69,7 +69,9 @@ class Receiver
 
     pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cloud;
     pcl::PCDWriter writer;
+
     std::mutex lock; 
+    // std::mutex pcl_lock;  //storage for static lock
     ros::AsyncSpinner spinner;
     std::thread imageDispThread, modelDispThread;
     std::vector<int> opt;
@@ -100,15 +102,11 @@ class Receiver
         opt.push_back(cv::IMWRITE_PNG_STRATEGY);
         opt.push_back(cv::IMWRITE_PNG_STRATEGY_RLE);
         opt.push_back(0);
+        loadSTL();
       }
 
     ~Receiver()
     {}   
-
-    void runSTL()
-    {
-      loadSTL();
-    }
 
     void run()
     {
@@ -142,7 +140,8 @@ class Receiver
     }
 
     void begin()
-    {
+    {      
+      // loadSTL();
       spinner.start();
       ROS_INFO("started spinner");
       running = true;
@@ -160,8 +159,7 @@ class Receiver
         
       //spawn the threads
       threads.push_back(std::thread(&Receiver::imageDisp, this));
-      threads.push_back(std::thread(&Receiver::loadSTL, this)); 
-      cloudViewer();    
+      threads.push_back(std::thread(&Receiver::cloudViewer, this));
 
       //call join on each thread in turn
       std::for_each(threads.begin(), threads.end(), \
@@ -172,23 +170,8 @@ class Receiver
     {
       spinner.stop();         
       running = false;
+
       std::cout << "destroyed clouds visualizer" << std::endl;
-    }
-
-    void getCameraInfo(const sensor_msgs::CameraInfo::ConstPtr cameraInfo, cv::Mat &cameraMatrix) const
-    {
-      double *itC = cameraMatrix.ptr<double>(0, 0);
-      for(size_t i = 0; i < 9; ++i, ++itC)
-      {
-        *itC = cameraInfo->K[i];
-      }
-    }
-
-    void getImage(const sensor_msgs::Image::ConstPtr msgImage, cv::Mat &image) const
-    {
-      cv_bridge::CvImageConstPtr pCvImage;
-      pCvImage = cv_bridge::toCvShare(msgImage, msgImage->encoding);
-      pCvImage->image.copyTo(image);
     }
 
     void loadSTL()
@@ -236,6 +219,7 @@ class Receiver
          vis.addModelFromPolyData (polydata1, "mesh1", 0);
          vis.setRepresentationToSurfaceForAllActors ();
          vis.spin();
+         ROS_INFO("Press 'q' to continue");
        }
 
        pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_1 (new pcl::PointCloud<pcl::PointXYZ>);
@@ -244,12 +228,9 @@ class Receiver
        if(INTER_VIS)
        {
         pcl::visualization::PCLVisualizer vis_sampled;
-        for(; running and ros::ok() ;)
-        {
-          ROS_INFO("called inter vis");
           vis_sampled.addPointCloud(cloud_1);
           vis_sampled.spin();
-        }
+          ROS_INFO("Press 'q' to continue");
        }
 
        //Voxelgrid
@@ -264,19 +245,19 @@ class Receiver
       {         
         pcl::visualization::PCLVisualizer vis3; 
         bool cloud_init = false;
-/*
+
         if(!cloud_init)
         {        
          vis3.setShowFPS(true);
          vis3.setPosition(50, 50);
          vis3.setSize(depth.cols, depth.rows);
-         // vis3.setBackgroundColor(0.2, 0.3, 0.3);
          cloud_init = !cloud_init;
-        }    */     
+        }         
           vis3.addPointCloud(res, "Model Voxel Cloud");
-/*        vis3.resetCameraViewpoint("Model Voxel Cloud");
-        vis3.registerKeyboardCallback(&Receiver::keyboardEvent, *this); */
-          vis3.spin();  
+          vis3.resetCameraViewpoint("Model Voxel Cloud");
+          vis3.registerKeyboardCallback(&Receiver::keyboardEvent, *this); 
+          vis3.spinOnce();  
+          ROS_INFO("Press 'q' to continue");
       }
     }
 
@@ -519,6 +500,22 @@ class Receiver
           itPtr->a = 255;
         }
       }
+    }
+
+    void getCameraInfo(const sensor_msgs::CameraInfo::ConstPtr cameraInfo, cv::Mat &cameraMatrix) const
+    {
+      double *itC = cameraMatrix.ptr<double>(0, 0);
+      for(size_t i = 0; i < 9; ++i, ++itC)
+      {
+        *itC = cameraInfo->K[i];
+      }
+    }
+
+    void getImage(const sensor_msgs::Image::ConstPtr msgImage, cv::Mat &image) const
+    {
+      cv_bridge::CvImageConstPtr pCvImage;
+      pCvImage = cv_bridge::toCvShare(msgImage, msgImage->encoding);
+      pCvImage->image.copyTo(image);
     }
 
     void saveAll(const pcl::PointCloud<pcl::PointXYZRGBA>::ConstPtr cloud, const cv::Mat &color, const cv::Mat &depth)
