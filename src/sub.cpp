@@ -161,8 +161,8 @@ class Receiver
       //spawn the threads
       threads.push_back(std::thread(&Receiver::imageDisp, this));
       threads.push_back(std::thread(&Receiver::loadSTL, this)); 
-      // threads.push_back(std::thread(&Receiver::cloudViewer, this));  
       cloudViewer();    
+
       //call join on each thread in turn
       std::for_each(threads.begin(), threads.end(), \
                     std::mem_fn(&std::thread::join)); 
@@ -172,7 +172,6 @@ class Receiver
     {
       spinner.stop();         
       running = false;
-      
       std::cout << "destroyed clouds visualizer" << std::endl;
     }
 
@@ -245,8 +244,12 @@ class Receiver
        if(INTER_VIS)
        {
         pcl::visualization::PCLVisualizer vis_sampled;
-        vis_sampled.addPointCloud(cloud_1);
-        vis_sampled.spin();
+        for(; running and ros::ok() ;)
+        {
+          ROS_INFO("called inter vis");
+          vis_sampled.addPointCloud(cloud_1);
+          vis_sampled.spin();
+        }
        }
 
        //Voxelgrid
