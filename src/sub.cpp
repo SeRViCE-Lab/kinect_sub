@@ -40,7 +40,10 @@
 void help()
 {
   std::cout << " USAGE: " << std::endl;
-  std::cout << "          rosrun kinect_sub sub <name of stl plate>" << std::endl;
+  std::cout << "          rosrun kinect_sub sub <name of stl plate> <sample_points> <leaf_size>" << std::endl;
+  std::cout << "                                                                               " << std::endl;
+  std::cout << "          <sample_points> is the number of points to use in sampling the visualizer" << std::endl;  
+  std::cout << "          <leaf_size> is the size of the leaves to use for the visualizer" << std::endl;
   std::cout <<"                                " << std::endl;
 }
 
@@ -68,6 +71,7 @@ class Receiver
     cv::Mat lookupX, lookupY;
 
     pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cloud;
+    pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_1;
     pcl::PCDWriter writer;
 
     std::mutex lock; 
@@ -176,19 +180,18 @@ class Receiver
 
     void loadSTL()
     {
-        int SAMPLE_POINTS_ = 1000;
-        float leaf_size = 100;
+        int SAMPLE_POINTS_ = argc > 1 ? atoi(argv[2]) : 1000;
+        float leaf_size    = argc > 2 ? atoi(argv[3]) : 100;
         pcl::PolygonMesh mesh;
         pcl::io::loadPolygonFileSTL (argv[1], mesh) ;
         std::vector<int> stl_file_indices = pcl::console::parse_file_extension_argument(argc, argv, ".stl");
 
         if (stl_file_indices.size () != 1)
         {
-          ROS_INFO("Need a single output STL file to continue.\n");
-          abort();
+          ROS_WARN("Need a single output STL file to continue.\n");
         }
 
-        vtkSmartPointer<vtkPolyData> polydata1 = vtkSmartPointer<vtkPolyData>::New ();;
+        vtkSmartPointer<vtkPolyData> polydata1 = vtkSmartPointer<vtkPolyData>::New ();
         if (stl_file_indices.size () == 1)
         {
           pcl::PolygonMesh mesh;
@@ -218,8 +221,8 @@ class Receiver
          pcl::visualization::PCLVisualizer vis;
          vis.addModelFromPolyData (polydata1, "mesh1", 0);
          vis.setRepresentationToSurfaceForAllActors ();
-         vis.spin();
          ROS_INFO("Press 'q' to continue");
+         vis.spin();
        }
 
        pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_1 (new pcl::PointCloud<pcl::PointXYZ>);
@@ -229,8 +232,9 @@ class Receiver
        {
         pcl::visualization::PCLVisualizer vis_sampled;
           vis_sampled.addPointCloud(cloud_1);
-          vis_sampled.spin();
           ROS_INFO("Press 'q' to continue");
+          this->cloud_1 = cloud_1;
+          vis_sampled.spin();
        }
 
        //Voxelgrid
@@ -265,6 +269,7 @@ class Receiver
     {
       cv::Mat color, depth;
       cv::Mat color_gray;   
+      pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_1;
 
       for(; running && ros::ok();)
       {
@@ -275,6 +280,7 @@ class Receiver
           depth = this->depth;
           updateImage = false;
           lock.unlock();
+          cloud_1 = this->cloud_1;
 
           //gray out and blur colored image
           cvtColor(color, color_gray, CV_BGR2GRAY);
@@ -310,7 +316,7 @@ class Receiver
           case ' ':
           case 's':
             makeCloud(depth, color, cloud);
-            saveAll(cloud, color, depth);
+            saveAll(cloud, color, depth, cloud_1);
             save = true;
             break;
         }
@@ -322,6 +328,7 @@ class Receiver
     void cloudViewer()
     {     
       cv::Mat color, depth;
+      pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_1;
             
       makeLookup(this->depth.cols, this->depth.rows);
       boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer (new pcl::visualization::PCLVisualizer("Cloud Viewer"));
@@ -332,6 +339,7 @@ class Receiver
       depth = this->depth;
       updateCloud = false;
       lock.unlock(); 
+      cloud_1 = this->cloud_1;
 
       makeCloud(depth, color, cloud);
 
@@ -355,13 +363,15 @@ class Receiver
           updateCloud = false;
           lock.unlock();
 
+          cloud_1 = this->cloud_1;
+
           makeCloud(depth, color, cloud);
           viewer->updatePointCloud(cloud, cloudName);
 
           if(save)
           {            
             save = false;
-            saveAll(cloud, color, depth);
+            saveAll(cloud, color, depth, cloud_1);
           }
         }          
         viewer->spinOnce(10);
@@ -518,7 +528,7 @@ class Receiver
       pCvImage->image.copyTo(image);
     }
 
-    void saveAll(const pcl::PointCloud<pcl::PointXYZRGBA>::ConstPtr cloud, const cv::Mat &color, const cv::Mat &depth)
+    void saveAll(const pcl::PointCloud<pcl::PointXYZRGBA>::ConstPtr cloud, const cv::Mat &color, const cv::Mat &depth, const pcl::PointCloud<pcl::PointXYZ>::ConstPtr cloud_1)
     {
       oss.str("");
       oss << "./" << std::setfill('0') << std::setw(4) << frame;
@@ -526,6 +536,7 @@ class Receiver
       const std::string cloudName = baseName + "_cloud.pcd";
       const std::string colorName = baseName + "_color.jpg";
       const std::string depthName = baseName + "_depth.png";
+      // const std::string stl_cloud = basename + "_static.stl";
 
       ROS_INFO_STREAM("saving cloud: " << cloudName);
       writer.writeBinary(cloudName, *cloud);
@@ -533,6 +544,8 @@ class Receiver
       cv::imwrite(colorName, color, opt);
       ROS_INFO_STREAM("saving depth: " << depthName);
       cv::imwrite(depthName, depth, opt);
+      ROS_INFO_STREAM("saving cloud: " << "stl_cloud");
+      writer.writeBinary("stl_cloud.pcd", *cloud_1);
       ROS_INFO_STREAM("saving complete!");
       ++frame;
     }
