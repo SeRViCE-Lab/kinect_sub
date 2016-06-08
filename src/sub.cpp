@@ -1,8 +1,9 @@
-//  Subscriber to Thiemo Wiedemeyer's iai_kinect2 kinect meta-package
-//  Code by olalekan ogunmolu
-//  Amazon Robotics LLC
-//  May 2016, MA, USA
+/*  Subscriber to Thiemo Wiedemeyer's iai_kinect2 kinect meta-package
+*   Code by olalekan ogunmolu
+*   May 2016, MA, USA
+*/
 #include <ros/ros.h>
+#include <ros/callback_queue.h>
 #include <iostream>
 #include <cassert>
 #include <mutex>
@@ -85,20 +86,23 @@ class Receiver
     char** argv;
       
     std::vector<std::thread> threads;
+    ros::CallbackQueue threadsQueue;
 
   public:
-    Receiver(int argc, char** argv)
-      : updateCloud(false), updateImage(false), updateModel(false), save(false), basetopic("/kinect2"), 
-      subNameColor(basetopic + "/qhd" + "/image_color_rect"), subNameDepth(basetopic + "/" + "qhd" + "/image_depth_rect"), topicCamInfoColor(basetopic + "/hd" + "/camera_info"), 
-      subImageColor(nc, subNameColor, 1), subImageDepth(nc, subNameDepth, 1), subInfoCam(nc, topicCamInfoColor, 1),
-      sync(syncPolicy(10), subImageColor, subImageDepth, subInfoCam), spinner(1), frame(0),  argc(argc), argv(argv)
+    Receiver(int argc, char** argv, ros::NodeHandle nh1, ros::AsyncSpinner disp_spinner)
+      : updateCloud(false), updateImage(false), updateModel(false), save(false), nc(nh1), basetopic("/kinect2"), 
+      subNameColor(basetopic + "/qhd" + "/image_color_rect"), subNameDepth(basetopic + "/" + "qhd" + "/image_depth_rect"),  
+      topicCamInfoColor(basetopic + "/hd" + "/camera_info"), subImageColor(nc, subNameColor, 1), subImageDepth(nc, subNameDepth, 1), 
+      subInfoCam(nc, topicCamInfoColor, 1), sync(syncPolicy(10), subImageColor, subImageDepth, subInfoCam), frame(0),  argc(argc), 
+      argv(argv), spinner(disp_spinner)
       {    
         ROS_INFO("Constructed Receiver");
         cameraMatrixColor = cv::Mat::zeros(3, 3, CV_64F);        
         cameraMatrixDepth = cv::Mat::zeros(3, 3, CV_64F);
       
-        sync.registerCallback(boost::bind(&Receiver::callback, this, _1, _2, _3) );
-
+        sync.registerCallback(boost::bind(&Receiver::callback, this, _1, _2, _3) );        
+        // threadsQueue.callAvailable(ros::WallDuration()); //all subscriptions, callbacks go through my_callback_queue
+        ROS_INFO("Called threadsQueue");
         opt.push_back(cv::IMWRITE_JPEG_QUALITY);
         opt.push_back(100);
         opt.push_back(cv::IMWRITE_PNG_COMPRESSION);
@@ -106,11 +110,17 @@ class Receiver
         opt.push_back(cv::IMWRITE_PNG_STRATEGY);
         opt.push_back(cv::IMWRITE_PNG_STRATEGY_RLE);
         opt.push_back(0);
-        loadSTL();
       }
 
     ~Receiver()
-    {}   
+    {
+
+    }   
+
+    void stl_runner()
+    {
+      loadSTL();
+    }
 
     void run()
     {
@@ -119,9 +129,11 @@ class Receiver
     }
 
   private:
-    void callback(const sensor_msgs::ImageConstPtr imageColor, const sensor_msgs::ImageConstPtr imageDepth, const sensor_msgs::CameraInfoConstPtr colorInfo)
+    void callback(const sensor_msgs::ImageConstPtr imageColor, const sensor_msgs::ImageConstPtr imageDepth,\
+                  const sensor_msgs::CameraInfoConstPtr colorInfo)
     {
       cv::Mat color, depth; 
+      ROS_INFO("I heard stuff");
     
       getCameraInfo(colorInfo, cameraMatrixColor);
       getImage(imageColor, color);
@@ -140,31 +152,20 @@ class Receiver
       this->depth = depth;
       updateImage = true;
       updateCloud = true;
-      updateModel = true;
       lock.unlock();
     }
 
     void begin()
     {      
-      // loadSTL();
-      spinner.start();
-      ROS_INFO("started spinner");
+      if(spinner.canStart())  
+      {   
+        spinner.start();  
+        ROS_INFO("started spinner");
+      }
       running = true;
-      
-      while(!updateImage || !updateCloud || !updateModel)
+      while(!updateImage || !updateCloud)
       {
-<<<<<<< HEAD
-        if(!ros::ok())
-        {
-          return;
-        }
-        // std::cout << "no updates" << std::endl;
-        lock.unlock();
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        lock.lock();
-=======
-        std::this_thread::sleep_for(duration);
->>>>>>> abe719923acd78b4930979daee45e5ea11141764
       }
       cloud = pcl::PointCloud<pcl::PointXYZRGBA>::Ptr(new pcl::PointCloud<pcl::PointXYZRGBA>());
       cloud->height = color.rows;
@@ -172,20 +173,6 @@ class Receiver
       cloud->is_dense = false;
       cloud->points.resize(cloud->height * cloud->width);
       makeLookup(this->color.cols, this->color.rows);
-<<<<<<< HEAD
-      
-      cloudViewer(); 
-/*      std::thread imageSTL[]{
-                            (&Receiver::imageDisp, this) ;
-                            (&Receiver::loadSTL, this));
-                            }(); */
-      ROS_INFO("after imageDispThread begin"); 
-      modelDispThread = std::thread(&Receiver::loadSTL, this); 
-      imageDispThread = std::thread(&Receiver::imageDisp, this); 
-             
-      ros::waitForShutdown();      
-      ROS_INFO("after waitForShutdown");
-=======
         
       //spawn the threads
       threads.push_back(std::thread(&Receiver::imageDisp, this));
@@ -194,20 +181,12 @@ class Receiver
       //call join on each thread in turn
       std::for_each(threads.begin(), threads.end(), \
                     std::mem_fn(&std::thread::join)); 
->>>>>>> abe719923acd78b4930979daee45e5ea11141764
     }
 
     void end()
     {
-      spinner.stop();         
+      // spinner.stop();       
       running = false;
-<<<<<<< HEAD
-      imageDispThread.join();
-      modelDispThread.join();
-      std::cout << "destroyed clouds visualizer" << std::endl;
-    }
-=======
->>>>>>> abe719923acd78b4930979daee45e5ea11141764
 
       std::cout << "destroyed clouds visualizer" << std::endl;
     }
@@ -232,13 +211,6 @@ class Receiver
           pcl::io::loadPolygonFileSTL (argv[stl_file_indices[0]], mesh);
           pcl::io::mesh2vtk (mesh, polydata1);
         }
-        // if(stl_file_indices.size() == 1)
-        // {
-        //   vtkSmartPointer<vtkSTLReader> readerQuery = vtkSmartPointer<vtkSTLReader>::New ();
-        //   readerQuery->SetFileName (argv[stl_file_indices[0]]);
-        //   readerQuery->Update ();
-        //   polydata1 = readerQuery->GetOutput ();
-        // }
         
         //make sure that the polygons are triangles!
         vtkSmartPointer<vtkTriangleFilter> triangleFilter = vtkSmartPointer<vtkTriangleFilter>::New ();
@@ -250,16 +222,12 @@ class Receiver
           triangleFilter->Update ();
 
       vtkSmartPointer<vtkPolyDataMapper> triangleMapper = vtkSmartPointer<vtkPolyDataMapper>::New ();
-      triangleMapper->SetInputConnection ( triangleFilter->GetOutputPort ());
+      triangleMapper->SetInputConnection (triangleFilter->GetOutputPort ());
       triangleMapper->Update();
       polydata1 = triangleMapper->GetInput();
 
       bool INTER_VIS = true;
-<<<<<<< HEAD
-      bool VIS = true;
-=======
       bool VIS = false;
->>>>>>> abe719923acd78b4930979daee45e5ea11141764
 
       if (INTER_VIS)
        {
@@ -276,24 +244,10 @@ class Receiver
        if(INTER_VIS)
        {
         pcl::visualization::PCLVisualizer vis_sampled;
-<<<<<<< HEAD
-        while(!vis_sampled.wasStopped())
-        {          
-            vis_sampled.addPointCloud(cloud_1);
-            vis_sampled.spin();
-            if(updateModel){
-            lock.lock();
-            vis_sampled.updatePointCloud(cloud_1);
-            updateModel = false;
-            lock.unlock();
-            vis_sampled.close();}
-        }
-=======
           vis_sampled.addPointCloud(cloud_1);
           ROS_INFO("Press 'q' to continue");
           this->cloud_1 = cloud_1;
           vis_sampled.spin();
->>>>>>> abe719923acd78b4930979daee45e5ea11141764
        }
 
        //Voxelgrid
@@ -315,26 +269,12 @@ class Receiver
          vis3.setPosition(50, 50);
          vis3.setSize(depth.cols, depth.rows);
          cloud_init = !cloud_init;
-<<<<<<< HEAD
-        } 
-        while(!vis3.wasStopped())    
-        {
-          lock.lock();
-          vis3.addPointCloud(res, "Model Voxel Cloud"); 
-          updateModel = false;
-          lock.unlock();
-          vis3.spin(); 
-        }    
-          // vis3.resetCameraViewpoint("Model Voxel Cloud");
-          // vis3.registerKeyboardCallback(&Receiver::keyboardEvent, *this); 
-=======
         }         
           vis3.addPointCloud(res, "Model Voxel Cloud");
           vis3.resetCameraViewpoint("Model Voxel Cloud");
           vis3.registerKeyboardCallback(&Receiver::keyboardEvent, *this); 
           vis3.spinOnce();  
           ROS_INFO("Press 'q' to continue");
->>>>>>> abe719923acd78b4930979daee45e5ea11141764
       }
     }
 
@@ -649,13 +589,20 @@ class Receiver
 
 int main(int argc, char **argv)
 {  
-  ros::init(argc, argv, "subscriber", ros::init_options::AnonymousName);
-
+  ros::init(argc, argv, "subscriber", ros::init_options::AnonymousName);  
   help();
+
+  ros::NodeHandle nhCall;
+  ros::CallbackQueue my_queue;
+  ros::CallbackQueue displayQueue;
+  ros::AsyncSpinner disp_spinner(2, &displayQueue);
 
   ROS_INFO("==> point clouds rendering ...");
 
-  Receiver receiver(argc, argv);
+  my_queue.callAvailable(ros::WallDuration());
+  nhCall.setCallbackQueue(&my_queue);
+  Receiver receiver(argc, argv, nhCall, disp_spinner);  
+  // receiver.stl_runner();
   receiver.run();
 
   if(!ros::ok())
